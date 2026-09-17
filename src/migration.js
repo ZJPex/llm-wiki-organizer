@@ -1,14 +1,16 @@
-import { copyFile, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { inventory } from './compatibility.js';
 import { safePath, verifyBackup } from './backup.js';
-import { sourceFrontmatter, summaryCandidates } from './source-format.js';
 import { modelGuard, nativeRescanVerifier, requireQuietRescan } from './migration-verifier.js';
 import { analyzeLinks as repairLinks } from './links.js';
-import { analyzeSharedOutputs, migrateAllCacheOutputs } from './shared-outputs.js';
-import { analyzeIndexes, executeIndexMigration, indexPlanReport } from './indexes.js';
+import { analyzeSharedOutputs } from './shared-outputs.js';
+import { analyzeIndexes, executeIndexMigration } from './indexes.js';
+import { compileBatchPlan } from './batch-plan.js';
+import { planDigest } from './categories.js';
+import { canonicalPath } from './filesystem-paths.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const key = value => value.replaceAll('\\', '/').toLowerCase();
@@ -47,113 +49,84 @@ async function loadReport(reportPath) {
 
 export function createMigrationService({ verify = nativeRescanVerifier(), checkpoint = async () => {}, analyzeLinks = repairLinks, analyzeShared = analyzeSharedOutputs, analyzeIndex = analyzeIndexes } = {}) {
   const plans = new Map();
-  async function plan(input) {
+  async function plan(input, restored = null) {
     if (input.writersPaused !== true) fail('WRITERS_NOT_PAUSED', '请先暂停全部外部写入');
     const backup = await loadReport(input.reportPath);
-    const root = backup.validationPath;
-    const oldPath = relativeRaw(input.oldPath);
-    const newPath = relativeRaw(input.newPath);
-    if (key(oldPath) === key(newPath)) fail('UNSUPPORTED_CASE_RENAME', '本阶段不支持同路径或仅大小写改名');
-    const baseline = await inventory(root);
-    const files = new Map(baseline.files.map(file => [file.path, file]));
-    if (!files.has(oldPath)) fail('SOURCE_MISSING', '旧源不存在');
-    const conflicts = target => [...files.keys()].some(name => key(name) === key(target));
-    if (conflicts(newPath)) fail('TARGET_EXISTS', '新位置已存在，不覆盖文件');
-
-    const oldIdentity = oldPath.slice('raw/sources/'.length);
-    const newIdentity = newPath.slice('raw/sources/'.length);
-    const state = async name => JSON.parse(await readFile(path.join(root, '.llm-wiki', name), 'utf8'));
-    const cache = await state('ingest-cache.json');
-    const entry = cache.entries?.[oldIdentity];
-    if (!entry || entry.hash !== files.get(oldPath).hash || !Array.isArray(entry.filesWritten) || !entry.filesWritten.length) fail('SOURCE_CHANGED', '源未摄取、内容变化或缓存关联不完整');
-    if (cache.entries[newIdentity]) fail('TARGET_EXISTS', '新身份已有摄取记录');
-    const outputs = entry.filesWritten.map(file => relativeOutput(root, file));
-    if (outputs.some(file => !files.has(file) || !file.startsWith('wiki/') || !file.endsWith('.md'))) fail('UNKNOWN_ASSOCIATION', '缓存产出缺失或非 Wiki Markdown');
-    const shared = await analyzeShared({ cache, oldIdentity, outputs, files, relativeOutput: value => relativeOutput(root, value) });
-    const candidates = summaryCandidates(oldIdentity).map(slug => `wiki/sources/${slug}.md`).filter(file => files.has(file));
-    if (candidates.length !== 1 || !outputs.includes(candidates[0])) fail('UNKNOWN_SUMMARY', '摘要缺失、多候选并存或未被缓存关联');
-    const oldSummary = candidates[0];
-    const newSummary = `wiki/sources/${summaryCandidates(newIdentity)[0]}.md`;
-    if (oldSummary !== newSummary && conflicts(newSummary)) fail('TARGET_EXISTS', '目标摘要已存在');
-    const moves = [{ from: oldPath, to: newPath }, ...(oldSummary === newSummary ? [] : [{ from: oldSummary, to: newSummary }])];
-    const changes = new Map();
-    const affectedPages = [];
-    const documents = [];
-    const sameBasenames = baseline.files.filter(file => file.path.startsWith('raw/sources/') && key(path.posix.basename(file.path)) === key(path.posix.basename(oldIdentity))).length;
-    const referenceIdentity = value => value.replaceAll('\\', '/').replace(/^raw\/sources\//i, '');
-    for (const file of baseline.files.filter(file => /\.md$/i.test(file.path))) {
-      const text = await readFile(path.join(root, file.path), 'utf8');
-      const frontmatter = sourceFrontmatter(text);
-      documents.push({ path: file.path, text, frontmatter });
-      if (file.path.startsWith('wiki/')) {
-        const matches = source => key(referenceIdentity(source)) === key(oldIdentity) || (sameBasenames === 1 && !referenceIdentity(source).includes('/') && key(referenceIdentity(source)) === key(path.posix.basename(oldIdentity)));
-        if (frontmatter.sources.some(matches)) {
-          const updated = frontmatter.replace(frontmatter.sources.map(source => matches(source) ? newIdentity : source));
-          if (sourceFrontmatter(updated).body !== frontmatter.body) fail('BODY_CHANGED', '知识正文不应变化');
-          changes.set(file.path, updated); affectedPages.push(file.path);
-        }
+    const baseline = await inventory(backup.validationPath);
+    const compiled = await compileBatchPlan(input, backup, baseline, { analyzeLinks, analyzeShared, analyzeIndex });
+    const directoryMappings = (compiled.evolution?.directoryMappings ?? []).filter(directory => compiled.moves?.some(move => move.from.startsWith(`${directory.from}/`)));
+    const newDirectories = (compiled.evolution?.newDirectories ?? []).filter(directory => compiled.moves?.some(move => move.to.startsWith(`${directory}/`)));
+    const id = restored?.planId ?? randomUUID();
+    const logicalChanges = [...(compiled.changes ?? new Map())].map(([file, text]) => {
+      if (file === '.llm-wiki/ingest-cache.json') {
+        const data = JSON.parse(text);
+        for (const entry of Object.values(data.entries)) entry.filesWritten = entry.filesWritten.map(value => path.isAbsolute(value) || path.win32.isAbsolute(value) ? `@library/${relativeOutput(backup.validationPath, value)}` : value);
+        return { path: file, content: JSON.stringify(data) };
       }
-    }
-    const links = await analyzeLinks({ root, baseline, documents, moves, changes, affectedPages });
-    const changedRaw = [...changes.keys()].filter(file => file.startsWith('raw/sources/') && /\.md$/i.test(file));
-    const uncachedReferences = [];
-    for (const file of changedRaw) {
-      const identity = file.slice('raw/sources/'.length);
-      const existing = cache.entries[identity];
-      if (!existing) { uncachedReferences.push(file); continue; }
-      if (existing.hash !== files.get(file).hash) fail('SOURCE_CHANGED', '引用文件的摄取缓存已过期，不能覆盖其内容变化');
-      existing.hash = createHash('sha256').update(changes.get(file)).digest('hex');
-    }
-    if (outputs.some(file => !affectedPages.includes(file))) fail('MISSING_SOURCE_REFERENCE', '缓存产出缺少可唯一确定的 sources 引用');
-    const indexPlan = await analyzeIndex({ baseline, root, oldPath, newPath, moves, changes });
-    const knownState = new Set(['.llm-wiki/project.json', '.llm-wiki/ingest-cache.json', '.llm-wiki/file-snapshot.json', '.llm-wiki/ingest-queue.json', '.llm-wiki/file-change-queue.json']);
-    for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !knownState.has(file.path) && !indexPlan.knownStatePaths.includes(file.path))) {
-      const text = await readFile(path.join(root, file.path), 'utf8');
-      if ([oldIdentity, oldSummary, path.posix.basename(oldSummary)].some(value => text.includes(value))) fail('UNKNOWN_STATE_REFERENCE', '未适配状态引用了受影响源或摘要');
-    }
-    for (const [name, transform] of [['ingest-queue.json', value => value], ['file-change-queue.json', value => value.tasks]]) {
-      const value = await state(name); const queue = transform(value);
-      if (!Array.isArray(queue) || queue.some(task => ['pending', 'processing'].includes(task.status))) fail('BUSY', '存在未完成队列任务');
-      let changed = false;
-      for (const task of queue) for (const field of ['sourcePath', 'path']) {
-        if (task[field] === oldPath) { task[field] = newPath; changed = true; }
-        else if (task[field] === oldSummary) { task[field] = newSummary; changed = true; }
-        else if (typeof task[field] === 'string' && task[field].includes(oldIdentity)) fail('UNKNOWN_TASK_PATH', '任务使用未适配路径格式');
+      if (file === '.llm-wiki/ingest-queue.json' || file === '.llm-wiki/file-change-queue.json') {
+        const data = JSON.parse(text), tasks = Array.isArray(data) ? data : data.tasks;
+        for (const task of tasks) if (task.projectId === backup.relocation.validationProjectId) task.projectId = '@project';
+        return { path: file, content: JSON.stringify(data) };
       }
-      if (changed) changes.set(`.llm-wiki/${name}`, JSON.stringify(value, null, 2));
+      return { path: file, content: text };
+    });
+    const logicalPlan = { schemaVersion: 1, items: compiled.items, dependencies: compiled.dependencies, moves: compiled.moves ?? [], selectedSources: compiled.selectedSources,
+      directories: { mappings: directoryMappings, create: newDirectories },
+      changes: logicalChanges, links: compiled.links ?? null, indexes: compiled.indexes ?? null };
+    const logicalPlanHash = planDigest(logicalPlan);
+    if (restored && (restored.logicalPlanHash !== logicalPlanHash || restored.baselineHash !== baseline.hash)) fail('STALE_PLAN', '持久化计划与当前确定性结果不一致');
+    const planManifestPath = `${backup.validationPath}.plan-${id}.json`;
+    const request = Object.fromEntries(['reportPath', 'oldPath', 'newPath', 'mappings', 'evolutionPlan', 'exclusions'].filter(name => input[name] !== undefined).map(name => [name, input[name]]));
+    request.writersPaused = true;
+    const backupManifestHash = createHash('sha256').update(await readFile(input.reportPath)).digest('hex');
+    const record = { schemaVersion: 1, planId: id, logicalPlanHash, logicalPlan, baselineHash: baseline.hash, beforeBaseline: baseline, backupReportPath: input.reportPath, backupManifestHash, request, targetRole: 'validation', targetRoot: backup.validationPath };
+    record.manifestHash = planDigest(record);
+    if (!restored) {
+      await writeFile(planManifestPath, JSON.stringify(record, null, 2), { flag: 'wx' });
+      const activePath = `${backup.validationPath}.active-plan.json`;
+      const previous = await readFile(activePath, 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (previous && (JSON.parse(previous).schemaVersion !== 1 || JSON.parse(previous).targetRoot !== backup.validationPath)) fail('INVALID_PLAN', '活动计划文件不属于当前验证副本');
+      const temporary = `${activePath}.tmp-${randomUUID()}`;
+      await writeFile(temporary, JSON.stringify({ schemaVersion: 1, targetRoot: backup.validationPath, planId: id, logicalPlanHash }), { flag: 'wx' });
+      await rename(temporary, activePath);
     }
-    const updatedCaches = migrateAllCacheOutputs(cache, root, oldIdentity, newIdentity, oldSummary, newSummary, value => relativeOutput(root, value));
-    changes.set('.llm-wiki/ingest-cache.json', JSON.stringify(cache, null, 2));
-    const snapshot = await state('file-snapshot.json');
-    if (snapshot.version !== 1 || !snapshot.files || !snapshot.files[oldPath]) fail('UNKNOWN_SNAPSHOT', '源快照不存在或版本未知');
-    for (const file of [oldPath, ...affectedPages]) {
-      const record = snapshot.files[file];
-      const data = await readFile(path.join(root, file));
-      if (!record || record.hash !== md5(data) || record.size !== data.length) fail('STALE_SNAPSHOT', '受影响文件快照与内容不一致');
-    }
-    const id = randomUUID();
-    const result = { planId: id, status: 'awaiting-review', batchId: backup.batchId, validationPath: root, mapping: { oldPath, newPath }, summaryMapping: { oldPath: oldSummary, newPath: newSummary }, affectedPages, links, uncachedReferences,
-      associations: { ...shared, updatedCaches }, indexes: indexPlanReport(indexPlan),
-      operations: [...moves.map(move => ({ type: 'move', ...move })), ...[...changes.keys()].map(file => ({ type: links?.repairs.some(repair => repair.path === file) ? 'links' : 'metadata', path: file })), { type: 'snapshot', path: '.llm-wiki/file-snapshot.json' }], baselineHash: baseline.hash, originalExecutionAllowed: false };
-    plans.set(id, { result, backup, reportPath: input.reportPath, baseline, moves, changes, snapshot, indexPlan, used: false });
-    return result;
+    else if (record.manifestHash !== restored.manifestHash) fail('STALE_PLAN', '计划清单或备份报告已改变');
+    const first = compiled.selectedSources[0];
+    const result = { planId: id, planManifestPath, logicalPlanHash, planHash: logicalPlanHash, status: compiled.moves?.length ? 'awaiting-review' : 'blocked', batchId: backup.batchId,
+      validationPath: backup.validationPath, mapping: first ? { oldPath: first.from, newPath: first.to } : null, summaryMapping: first ? { oldPath: first.summaryFrom, newPath: first.summaryTo } : null,
+      items: compiled.items, dependencies: compiled.dependencies, directoryMappings, newDirectories,
+      affectedPages: compiled.affectedPages ?? [], links: compiled.links ?? null, uncachedReferences: compiled.uncachedReferences ?? [], associations: compiled.associations ?? {}, indexes: compiled.indexes ?? { status: 'absent', tables: [], pageMoves: [] },
+      operations: [...(compiled.moves ?? []).map(move => ({ type: 'move', ...move })), ...[...(compiled.changes?.keys() ?? [])].map(file => ({ type: compiled.links?.repairs.some(repair => repair.path === file) ? 'links' : 'metadata', path: file })), { type: 'snapshot', path: '.llm-wiki/file-snapshot.json' }], baselineHash: baseline.hash, originalExecutionAllowed: false };
+    plans.set(id, { ...compiled, result, backup, reportPath: input.reportPath, baseline, used: false, record });
+    return structuredClone(result);
   }
+
   async function executePlan(input) {
     const current = plans.get(input.planId);
     if (!current || current.used || input.approved !== true || input.writersPaused !== true) fail('REVIEW_REQUIRED', '计划不存在、已使用或尚未审核确认');
+    if (!current.moves?.length) fail('EMPTY_BATCH', '批次没有可执行项目');
+    if (input.planHash && input.planHash !== current.result.logicalPlanHash) fail('STALE_PLAN', '审核的计划哈希不匹配');
     const { backup, baseline, moves, changes, snapshot, indexPlan } = current;
+    const persisted = JSON.parse(await readFile(current.result.planManifestPath, 'utf8'));
+    const { manifestHash, ...persistedContent } = persisted;
+    if (planDigest(persistedContent) !== manifestHash || manifestHash !== current.record.manifestHash) fail('INVALID_PLAN', '冻结计划文件已损坏或改变');
+    const active = JSON.parse(await readFile(`${backup.validationPath}.active-plan.json`, 'utf8'));
+    if (active.planId !== input.planId || active.logicalPlanHash !== current.result.logicalPlanHash) fail('STALE_PLAN', '该方案已被重新审核的方案取代');
+    if (createHash('sha256').update(await readFile(current.reportPath)).digest('hex') !== current.record.backupManifestHash) fail('STALE_PLAN', '备份报告在审核后改变');
     await loadReport(current.reportPath);
     if ((await inventory(backup.validationPath)).hash !== baseline.hash) fail('STALE_PLAN', '计划后验证副本发生变化');
     current.used = true;
     const guard = modelGuard();
-    const result = { ...current.result, status: 'failed', phase: 'verification-before', modelAttempts: guard.attempts, originalExecutionAllowed: false, journalPath: `${backup.validationPath}.migration-${input.planId}.json` };
-    const journal = { ...result, backupReportPath: current.reportPath, beforeBaseline: baseline, preimages: [], completed: [] };
+    const result = { ...structuredClone(current.result), status: 'failed', phase: 'verification-before', modelAttempts: guard.attempts, originalExecutionAllowed: false, journalPath: `${backup.validationPath}.migration-${input.planId}.json` };
+    result.items = result.items.map(item => ({ ...item, status: item.status === 'selected' ? 'pending' : item.status }));
+    const journal = { ...result, backupReportPath: current.reportPath, backupManifestHash: current.record.backupManifestHash, targetRole: 'validation', targetRoot: backup.validationPath, planManifestPath: result.planManifestPath, planManifestHash: current.record.manifestHash, beforeBaseline: baseline, preimages: [], intents: [], completed: [] };
     const persist = async () => {
       const temporary = `${result.journalPath}.tmp-${randomUUID()}`;
       await writeFile(temporary, JSON.stringify(journal, null, 2), { flag: 'wx' });
       await rename(temporary, result.journalPath);
     };
     await writeFile(result.journalPath, JSON.stringify(journal, null, 2), { flag: 'wx' });
+    const intent = async value => { journal.intents.push(value); await persist(); };
     async function runProof() {
       const preserved = await Promise.all(['file-snapshot.json', 'file-change-queue.json'].map(async name => ({ file: path.join(backup.validationPath, '.llm-wiki', name), bytes: await readFile(path.join(backup.validationPath, '.llm-wiki', name)) })));
       const proof = requireQuietRescan(await verify({ validationPath: backup.validationPath, projectId: backup.relocation.validationProjectId, models: guard }));
@@ -171,26 +144,55 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       for (const file of affected) journal.preimages.push({ path: file, contentBase64: (await readFile(path.join(backup.validationPath, file))).toString('base64') });
       journal.phase = result.phase = 'writing'; await persist();
       for (const [file, content] of changes) {
+        for (const item of result.items) if (item.status === 'pending') item.status = 'applied-unverified';
+        await intent({ type: 'write', path: file });
         await safePath(path.dirname(path.join(backup.validationPath, file)));
         await writeFile(path.join(backup.validationPath, file), content);
         journal.completed.push({ type: 'write', path: file }); await persist(); await checkpoint('write', { file, models: guard });
       }
-      for (const move of moves) {
-        const target = path.join(backup.validationPath, move.to);
-        await mkdir(path.dirname(target), { recursive: true }); await safePath(path.dirname(target));
-        await copyFile(path.join(backup.validationPath, move.from), target, constants.COPYFILE_EXCL);
-        journal.completed.push({ type: 'copy', ...move }); await persist();
-        await unlink(path.join(backup.validationPath, move.from));
-        journal.completed.push({ type: 'unlink', path: move.from }); await persist(); await checkpoint('move', { ...move, models: guard });
-        snapshot.files[move.to] = snapshot.files[move.from]; delete snapshot.files[move.from];
+      const staging = `${backup.validationPath}.staging-${input.planId}`;
+      journal.stagingPath = staging; await intent({ type: 'create-staging', path: staging });
+      await safePath(staging, { missingLeaf: true }); await mkdir(staging);
+      // 先保存所有最终字节，再解除全部旧路径占位，支持大小写改名与交换。
+      for (const [index, move] of moves.entries()) {
+        const staged = path.join(staging, String(index));
+        await intent({ type: 'stage', path: staged, ...move });
+        await copyFile(path.join(backup.validationPath, move.from), staged, constants.COPYFILE_EXCL);
+        journal.completed.push({ type: 'stage', path: staged, ...move }); await persist(); await checkpoint('stage', { ...move, models: guard });
       }
-      for (const file of new Set([moves[0].to, ...current.result.affectedPages.map(file => moves.find(move => move.from === file)?.to ?? file)])) {
+      for (const move of moves) {
+        await intent({ type: 'unlink', path: move.from, itemId: move.itemId });
+        await unlink(path.join(backup.validationPath, move.from));
+        journal.completed.push({ type: 'unlink', path: move.from, itemId: move.itemId }); await persist();
+      }
+      const oldDirectories = new Set(current.result.directoryMappings.map(item => item.from));
+      for (const move of moves) for (let dir = path.posix.dirname(move.from); dir.startsWith('raw/sources/'); dir = path.posix.dirname(dir)) oldDirectories.add(dir);
+      for (const dir of [...oldDirectories].sort((a, b) => b.length - a.length)) {
+        await intent({ type: 'remove-empty-directory', path: dir });
+        try { await rmdir(path.join(backup.validationPath, dir)); journal.completed.push({ type: 'remove-empty-directory', path: dir }); await persist(); }
+        catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error; }
+      }
+      for (const dir of current.result.newDirectories) { await intent({ type: 'create-directory', path: dir }); await mkdir(path.join(backup.validationPath, dir), { recursive: true }); await safePath(path.join(backup.validationPath, dir)); }
+      const originalSnapshotFiles = { ...snapshot.files };
+      for (const move of moves) delete snapshot.files[move.from];
+      for (const [index, move] of moves.entries()) {
+        const target = path.join(backup.validationPath, move.to);
+        await intent({ type: 'place', ...move });
+        await mkdir(path.dirname(target), { recursive: true }); await safePath(path.dirname(target));
+        await copyFile(path.join(staging, String(index)), target, constants.COPYFILE_EXCL);
+        if (originalSnapshotFiles[move.from]) snapshot.files[move.to] = originalSnapshotFiles[move.from];
+        const item = result.items.find(item => item.id === move.itemId); if (item) item.status = 'applied-unverified';
+        journal.items = result.items; journal.completed.push({ type: 'copy', ...move }); await persist(); await checkpoint('move', { ...move, models: guard });
+      }
+      for (const file of new Set(current.snapshotTargets.map(file => moves.find(move => move.from === file)?.to ?? file))) {
         const full = path.join(backup.validationPath, file); const bytes = await readFile(full); const stat = await lstat(full);
         snapshot.files[file] = { ...snapshot.files[file], hash: md5(bytes), size: bytes.length, mtimeMs: Math.trunc(stat.mtimeMs) };
       }
+      await intent({ type: 'indexes', plan: current.result.indexes });
       result.indexProof = await executeIndexMigration(backup.validationPath, indexPlan);
       journal.completed.push({ type: 'indexes', proof: result.indexProof }); await persist();
       snapshot.updatedAt = Date.now();
+      await intent({ type: 'snapshot' });
       await writeFile(path.join(backup.validationPath, '.llm-wiki/file-snapshot.json'), JSON.stringify(snapshot, null, 2));
       journal.completed.push({ type: 'snapshot' }); journal.phase = result.phase = 'verification-after'; await persist();
       result.afterProof = await runProof();
@@ -198,12 +200,26 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       await verifyBackup(backup.originalPath, backup.baseline, backup.directories);
       await verifyBackup(backup.backupPath, backup.baseline, backup.directories);
       result.afterBaseline = await inventory(backup.validationPath);
-      result.status = 'complete'; result.phase = 'verified-copy';
-    } catch (error) { result.error = { code: error.code ?? 'MIGRATION_FAILED', message: error.message }; }
+      for (const [index] of moves.entries()) await unlink(path.join(staging, String(index)));
+      await rmdir(staging);
+      result.items = result.items.map(item => ({ ...item, status: ['pending', 'applied-unverified'].includes(item.status) ? 'succeeded' : item.status }));
+      result.status = result.items.every(item => item.status === 'succeeded') ? 'complete' : 'partial'; result.phase = 'verified-copy';
+    } catch (error) {
+      result.error = { code: error.code ?? 'MIGRATION_FAILED', message: error.message };
+      const failedItem = journal.intents.at(-1)?.itemId;
+      result.items = result.items.map(item => ({ ...item, status: item.id === failedItem ? 'failed' : item.status === 'pending' ? 'not-run' : item.status }));
+    }
     Object.assign(journal, result); await persist();
     return result;
   }
   async function execute(input) {
+    if (!plans.has(input.planId) && input.planManifestPath) {
+      const record = JSON.parse(await readFile(input.planManifestPath, 'utf8'));
+      const { manifestHash, ...rest } = record;
+      if (record.schemaVersion !== 1 || planDigest(rest) !== manifestHash || record.planId !== input.planId) fail('INVALID_PLAN', '持久化计划损坏或标识不符');
+      if (key(await canonicalPath(input.planManifestPath)) !== key(await canonicalPath(`${record.targetRoot}.plan-${record.planId}.json`))) fail('INVALID_PLAN', '计划文件位置与记录不符');
+      await plan(record.request, record);
+    }
     const current = plans.get(input.planId);
     if (!current) fail('REVIEW_REQUIRED', '计划不存在或已失效');
     const target = key(current.backup.validationPath);
