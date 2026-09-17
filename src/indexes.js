@@ -8,6 +8,12 @@ const fieldsV1=['page_id','vector'];
 const fieldsV2=['chunk_id','page_id','chunk_index','chunk_text','heading_path','vector'];
 const scalar = value => `'${value.replaceAll("'","''")}'`;
 const rowFingerprint = rows => hash(JSON.stringify(rows.map(row=>({...row,vector:Buffer.from(new Float32Array(row.vector).buffer).toString('hex')}))));
+function checkWritePath(root,names) {
+  if(process.platform!=='win32')return;
+  // 固定 Lance 依赖在 Windows 上的临时文件提交不支持长路径；为生成的数据文件名留出余量。
+  for(const name of names)if(path.join(root,'.llm-wiki/lancedb',`${name}.lance`,'data','0'.repeat(64)+'.lance').length>=260)
+    fail('Windows LanceDB 写入路径过长；请将备份与演练工作目录移到更短的库外路径，再重新生成方案');
+}
 function normalizedRows(rows,chunked) {
   return rows.map(row=>Object.fromEntries((chunked?fieldsV2:fieldsV1).map(name=>[name,name==='vector'?Array.from(row[name]):row[name]])))
     .sort((a,b)=>(a.chunk_id??a.page_id).localeCompare(b.chunk_id??b.page_id));
@@ -43,6 +49,7 @@ export async function analyzeIndexes({baseline,root,moves,changes}) {
   const diskFiles=baseline.files.filter(file=>file.path.startsWith('.llm-wiki/lancedb/')).map(file=>file.path);
   if(!diskFiles.length)return {status:'absent',tables:[],knownStatePaths:[],pageMoves:[]};
   if(diskFiles.some(file=>!/^\.llm-wiki\/lancedb\/(wiki_vectors|wiki_chunks_v2)\.lance\//.test(file)))fail('向量目录包含未知数据库或格式');
+  checkWritePath(root,[...new Set(diskFiles.map(file=>file.split('/')[2].replace(/\.lance$/,'')))]);
   try {
     const {connect}=await import('@lancedb/lancedb');
     const db=await connect(path.join(root,'.llm-wiki/lancedb'));
@@ -87,6 +94,7 @@ export async function verifyIndexContents(root,expected) {
 }
 export async function executeIndexMigration(root,plan) {
   if(plan.status==='absent')return {status:'absent',tables:[]};
+  checkWritePath(root,plan.tables.map(table=>table.name));
   const {connect}=await import('@lancedb/lancedb');
   const location=path.join(root,'.llm-wiki/lancedb');
   const db=await connect(location), reports=[];
