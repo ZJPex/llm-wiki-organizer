@@ -1,7 +1,7 @@
 let frozen, evolutionPlan;
 const rows = document.querySelector('#rows'), status = document.querySelector('#status');
 const labels = { selected: '可执行', blocked: '不安全', excluded: '已排除', pending: '等待执行', succeeded: '已成功', failed: '失败', 'not-run': '未执行', 'applied-unverified': '已发生修改，尚未验证' };
-function invalidate() { frozen = null; document.querySelector('#review').hidden = true; status.textContent = '映射已修改，请重新计算并审核。'; }
+function invalidate() { frozen = null; document.querySelector('#review').hidden = true; document.querySelector('#results').hidden = true; status.textContent = '映射已修改，请重新计算并审核。'; }
 function add(item = {}) {
   const tr = document.createElement('tr'); tr.dataset.id = item.id ?? '';
   for (const field of ['enabled', 'from', 'to']) { const td = document.createElement('td'), input = document.createElement('input'); input.dataset.field = field;
@@ -26,6 +26,7 @@ async function call(action, input) {
 }
 document.querySelector('#batch').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
+  invalidate(); status.textContent = '正在校验并生成新的批量方案…';
   try {
     const form = new FormData(event.target), mappings = [...rows.children].map(tr => ({ ...(tr.dataset.id ? { id: tr.dataset.id } : {}), from: tr.querySelector('[data-field=from]').value, to: tr.querySelector('[data-field=to]').value, enabled: tr.querySelector('[data-field=enabled]').checked }));
     frozen = await call('plan', { reportPath: form.get('reportPath'), writersPaused: form.has('writersPaused'), ...(mappings.length ? { mappings } : {}), ...(evolutionPlan ? { evolutionPlan } : {}) });
