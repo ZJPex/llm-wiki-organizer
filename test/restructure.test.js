@@ -29,6 +29,20 @@ async function fixture(t){
  const options={stateDirectory:path.join(f.root,'state'),strategies:{restructure:createRestructureStrategy({generate})},planning:createPlanningService({generate,stateDirectory:path.join(f.root,'planning')}),backup:input=>createBackup(input,{inspect:input=>preflight(input,{sourceManifest:{version:'0.6.11',commit:UPSTREAM_COMMIT,files:{fixture:digest('verified-test-format')}}})}),migration:createMigrationService({verify}),recovery:createRecoveryService({verify}),original:createOriginalExecutionService({verify})};
  return {...f,calls,options,original,input:{mode:'restructure',libraryPath:f.backup.originalPath,sourceRoot:path.join(f.backup.originalPath,'raw/sources'),wikiSourcePath:path.join(f.root,'upstream'),artifactRoot,configPath}};
 }
+
+test('全量分析模式出错即停，重新读取可继续，进度包含分页外待分析材料',async t=>{
+ const f=await fixture(t);let calls=0,fail=true;
+ const strategy=createRestructureStrategy();
+ strategy.analyze=async()=>{calls++;if(fail)throw new Error('测试模型失败');return {status:'analyzed',analysis:{summary:'测试摘要'}};};
+ const service=createBatchService({...f.options,strategies:{restructure:strategy}});
+ let batch=await service.create(f.input);assert.equal(batch.analysisProgress.remaining,4);
+ await assert.rejects(service.analyzeNext({batchId:batch.batchId,revision:batch.revision,limit:5,stopOnFailure:true}),/测试模型失败/);
+ assert.equal(calls,1);batch=await service.get({batchId:batch.batchId,limit:1});
+ assert.equal(batch.sources.length,1);assert.equal(batch.analysisProgress.remaining,4);assert.equal(batch.analysisProgress.failed,1);
+ fail=false;batch=await service.analyzeNext({batchId:batch.batchId,revision:batch.revision,limit:5,stopOnFailure:true});
+ assert.equal(batch.analysisProgress.remaining,0);assert.equal(batch.analysisProgress.failed,0);
+ assert.ok(batch.sources.every(source=>source.skipReason!=='测试模型失败'));
+});
 test('首次全库先分析长转写/导航并审五层树，再逐批审核执行；低信息和共享正文保留',async t=>{
  const f=await fixture(t),service=createBatchService(f.options);let batch=await service.create(f.input);
  await assert.rejects(service.treeAction({batchId:batch.batchId,revision:batch.revision,action:'propose'}),{code:'ANALYSIS_INCOMPLETE'});batch=await service.get({batchId:batch.batchId});
