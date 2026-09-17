@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {sourceFrontmatter} from './source-format.js';
 const fail = message => {throw Object.assign(new Error(message),{code:'UNSUPPORTED_INDEX'});};
@@ -59,7 +59,8 @@ export async function analyzeIndexes({baseline,root,moves,changes}) {
           if(sourceFrontmatter(original).body!==sourceFrontmatter(changes.get(pages[0].path)).body)fail('正文修复影响已有索引片段，尚未验证片段迁移，保留该材料');
         }
       }
-      for(const move of pageMoves) if(move.from!==move.to&&rows.some(row=>row.page_id===move.to))fail('目标摘要向量标识已存在');
+      if(new Set(pageMoves.map(move=>move.to)).size!==pageMoves.length)fail('最终摘要向量标识重复');
+      for(const move of pageMoves) if(move.from!==move.to&&rows.some(row=>row.page_id===move.to)&&!pageMoves.some(other=>other.from===move.to))fail('目标摘要向量标识已存在');
       tables.push({name,rows,baselineHash:rowFingerprint(rows),affectedRows:rows.filter(row=>pageMoves.some(move=>move.from===row.page_id)).length});
     }
     return {status:'ready',tables,knownStatePaths:diskFiles,pageMoves};
@@ -74,8 +75,14 @@ export async function executeIndexMigration(root,plan) {
   for(const expected of plan.tables) {
     const {table,rows,chunked}=await readTable(db,expected.name);
     if(rowFingerprint(rows)!==expected.baselineHash)fail('索引在审核后变化');
-    for(const move of plan.pageMoves) for(const row of rows.filter(row=>row.page_id===move.from)) {
-      await table.update({where:chunked?`chunk_id = ${scalar(row.chunk_id)}`:`page_id = ${scalar(row.page_id)}`,values:chunked?{page_id:move.to,chunk_id:`${move.to}#${row.chunk_index}`}:{page_id:move.to}});
+    const temporary=plan.pageMoves.filter(move=>move.from!==move.to).map(move=>({...move,temp:`organizer-${randomUUID()}`}));
+    for(const move of temporary) if(rows.some(row=>row.page_id===move.temp))fail('临时向量标识发生冲突');
+    // 先将所有旧标识移到独占临时标识，避免交换或链式映射覆盖后续条件。
+    for(const move of temporary) for(const row of rows.filter(row=>row.page_id===move.from)) {
+      await table.update({where:chunked?`chunk_id = ${scalar(row.chunk_id)}`:`page_id = ${scalar(row.page_id)}`,values:chunked?{page_id:move.temp,chunk_id:`${move.temp}#${row.chunk_index}`}:{page_id:move.temp}});
+    }
+    for(const move of temporary) for(const row of rows.filter(row=>row.page_id===move.from)) {
+      await table.update({where:chunked?`chunk_id = ${scalar(`${move.temp}#${row.chunk_index}`)}`:`page_id = ${scalar(move.temp)}`,values:chunked?{page_id:move.to,chunk_id:`${move.to}#${row.chunk_index}`}:{page_id:move.to}});
     }
     const reopened=await connect(location);
     const actual=await readTable(reopened,expected.name);

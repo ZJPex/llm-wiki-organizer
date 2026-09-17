@@ -19,7 +19,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
     if (req.headers.host !== `127.0.0.1:${req.socket.localPort}` || (req.headers.origin && req.headers.origin !== origin)) return send(403, { error: '仅接受本地页面请求' });
     try {
       if (req.method === 'GET' && req.url === '/api/session') return send(200, { token });
-      const assets = { '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
+      const assets = { '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
       if (req.method === 'GET' && assets[req.url]) {
         const [file, type] = assets[req.url];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
@@ -30,7 +30,8 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !migrationAction && !planningAction)) return send(404, { error: '入口不存在' });
       if (req.headers['x-organizer-token'] !== token || req.headers['content-type'] !== 'application/json') return send(403, { error: '会话校验失败，请刷新本地页面' });
       let body = '';
-      for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 16384) return send(413, { error: '请求过大' }); }
+      const bodyLimit = migrationAction ? 2 * 1024 * 1024 : 16384;
+      for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > bodyLimit) return send(413, { error: '请求过大' }); }
       let input;
       try { input = JSON.parse(body); } catch { return send(400, { error: '请求格式无效' }); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) return send(400, { error: '请求格式无效' });

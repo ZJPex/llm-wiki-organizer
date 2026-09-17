@@ -50,3 +50,15 @@ Windows 也可设置 `ORGANIZER_RESCAN_WSL_DISTRIBUTION=Ubuntu-24.04`，并将 `
 无索引库正常运行。未知表/schema/字段元数据、孤立或歧义 page stem、新标识冲突、源 `.cache` 旁缓存均拒绝。若正文链接修复会影响已有索引片段，也暂时拒绝该材料，避免返回旧片段。受影响页面存在 `embedding-revisions/<sha256(page_id)>.revision` 时拒绝：上游此值是全文与有效嵌入配置的复合签名，未取得可验证配置时既不猜测新值，也不把旧值冒充有效。无关 revision 保持原样。这是明确兼容边界，不能宣称覆盖所有索引历史格式。
 
 2026-09-17：真实 v1/v2 多来源合成数据库迁移测试通过，全部向量位模式与无关行保留，重连搜索返回新摘要及原共享页面。实际迁移后的共享索引副本同时通过固定上游 Rust 重扫和真实前端外部模式；`attempts=[]`、`frontendSideEffects=[]`、`changedTasks=[]`。本地证据位于临时目录 `organizer-shared-index-VzREP6/external-proof.json`。这是已核验 Arrow schema 的真实数据库验证，不等同于完整桌面重启或未来 LanceDB 版本保证。
+
+## T6 批量冻结、依赖与执行
+
+`createMigrationService().buildPlan(input)`／`plan(input)` 保留单源 `oldPath/newPath`，新增 `mappings:[{id?,from,to,enabled?}]`、`exclusions:[id]` 与 `evolutionPlan`。分类演化计划重新校验目录清单、文件基线和计划哈希，再复用 `compileEvolution` 的最小空号及完整后代前缀；修改目标不能改变已确认文件名。页面 `/batch-migration` 提供导入、逐项修改、排除、重新冻结和副本执行入口。空目录本身不作为独立批次项目；仅创建选中材料所需目录，源目录仅在实际为空时移除。
+
+一次编译所有选中映射：共享 sources、全缓存 filesWritten、队列、反链及索引使用同一冻结映射，避免 A→B→C 连续替换。源/摘要目标占位建立依赖；排除占位者会阻塞依赖者，确定到项目的歧义可阻塞该项后重新编译安全子集，无法定位的未知状态阻塞所有剩余项。公开 `items` 含 selected/excluded/blocked 及原因，`dependencies` 保留依赖关系。交换和仅大小写改名使用副本外独占 staging，索引先切换到独占临时标识再落最终标识，不覆盖现存数据。T5 的未知格式、revision、已有向量片段正文变更限制继续生效。
+
+计划返回 `planManifestPath` 与 `logicalPlanHash`（也作兼容 `planHash`）。`${validationPath}.plan-${planId}.json` 包含完整 `logicalPlan`、`beforeBaseline`、`backupReportPath`、`backupManifestHash`、原始 `request` 和 `manifestHash`；逻辑计划中的路径为项目相对路径，已知缓存绝对产出替换为 `@library/`，队列副本身份替换为 `@project`，运行根和物理基线单独存放。`${validationPath}.active-plan.json` 指向最后一次审核计划，重新规划使旧计划失效。执行核验两份清单、备份报告哈希和磁盘基线；重启后传 `planId/planManifestPath` 可重新构造并校验计划，不依赖进程内 Map。此入口仍只支持 validation 角色；T8 必须独立审核恢复/副本证据后适配原库身份。
+
+journal 增加 `targetRole/targetRoot/planManifestPath/planManifestHash/backupManifestHash/stagingPath`。每个操作先持久化 `intents` 再操作，完成后记录 completed；失败现场和 staging 保留，T7 必须用磁盘事实及完整备份恢复，不能只相信 completed。恢复入口应独立读取备份报告，不能要求已失败现场仍等于旧 baseline。逐项结果包括 succeeded、applied-unverified、failed、not-run、blocked、excluded；只有全批证明通过才将已应用项目标为 succeeded，有排除或阻塞时整体为 partial，不能显示全批完成。
+
+验证覆盖重启读取、清单篡改、重新规划使旧计划失效、依赖闭包、歧义安全子集、目录完整编号、固定名称、空文件/大小写、重复内容交换、共享缓存与真实 LanceDB 两表交换，以及阶段中断现场保留。2026-09-17 批量合成副本通过真实 Rust 重扫；另经真实前端外部模式 1/1 通过，`attempts=[]`、`frontendSideEffects=[]`、`changedTasks=[]`。本地联合证据为临时目录 `organizer-migration-vplQcV/external-t6-proof.json`，不涉及真实用户知识库。
