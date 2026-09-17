@@ -36,6 +36,8 @@ npm start
 
 保存页面显示的批次编号，重启后可读取进度。低信息、歧义、重名和陈旧方案会保留来源并报告；失败现场及备份不会自动删除。Windows 建议选较短的库外工作目录，避免 LanceDB 文件路径限制。批次状态和恢复边界见 [批次契约](docs/batches-contract.md)。
 
+新增材料含本地图片、附件或材料相对链接，或仍被其他材料相对引用时，本版本会保留来源并报告，避免归档后链接失效。HTTP 链接和文内锚点可正常保留。审核后新增的摄取记录或 Wiki 关联也会使旧方案失效，须按新的来源状态重新审核。
+
 ## 历史迁移验证器
 
 兼容基线为 llm-wiki **0.6.11**、提交 `e8082119649e6a8e1cf85eaf289adcabfdf39d4e`。需要这份 Wiki 源码和 Rust 工具链，按 [验证器构建说明](scripts/upstream-rescan/README.md) 构建真实上游重扫入口。启动整理器前设置 `ORGANIZER_RESCAN_BINARY` 为构建产物的绝对路径。例如 PowerShell：
