@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: 安装锁定的整理器依赖
+        run: npm ci --no-audit --no-fund
       - name: 运行批次和页面入口测试
         run: npm test
   upstream-rescan:
@@ -34,6 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: 安装锁定的整理器依赖
+        run: npm ci --no-audit --no-fund
       - name: 校验并准备固定上游扫描源码
         run: node scripts/upstream-rescan/prepare.mjs .upstream "$RUNNER_TEMP/organizer-rescan"
       - name: 验证真实文件扫描与变更队列

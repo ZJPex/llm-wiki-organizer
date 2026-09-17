@@ -14,11 +14,22 @@ function showReport(selector, data, completed = false) {
     line('原有失效链接', `${data.links.preexistingBroken.length} 处`);
     line('原有歧义链接', `${data.links.preexistingAmbiguous.length} 处`);
     line('新增失效链接', `${data.links.newlyBroken.length} 处`);
+    for (const repair of data.links.repairs) line(`链接路径（${repair.path}）`, `${repair.before} → ${repair.after}`);
+  }
+  if (data.uncachedReferences?.length) line('未摄取的引用文件', `${data.uncachedReferences.join('、')}；仅修复路径，不创建摄取记录`);
+  if (data.associations) {
+    line('共享来源', data.associations.sharedSources.map(item => item.identity).join('、') || '无');
+    line('同步缓存来源', data.associations.updatedCaches.join('、') || '无');
+  }
+  if (data.indexes) {
+    line('索引状态', data.indexes.status === 'absent' ? '没有需要迁移的索引' : '已校验结构，等待路径迁移');
+    for (const table of data.indexes.tables) line(`索引表 ${table.name}`, `${table.affectedRows} 条受影响记录`);
   }
   if (completed) {
     line('执行状态', data.status === 'complete' ? '验证通过' : `失败（${data.phase}）`);
     line('模型调用尝试', data.modelAttempts.length);
     if (data.afterProof) line('迁移后重扫变更任务', data.afterProof.result.changedTasks.length);
+    if (data.indexProof) line('索引验证', data.indexProof.status === 'verified' ? '迁移后已验证向量保留与检索关联' : '无索引变更');
     line('恢复记录', data.journalPath);
     if (data.error) line('失败原因', typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
   }
