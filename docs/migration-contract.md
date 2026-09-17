@@ -50,3 +50,9 @@ Windows 也可设置 `ORGANIZER_RESCAN_WSL_DISTRIBUTION=Ubuntu-24.04`，并将 `
 无索引库正常运行。未知表/schema/字段元数据、孤立或歧义 page stem、新标识冲突、源 `.cache` 旁缓存均拒绝。若正文链接修复会影响已有索引片段，也暂时拒绝该材料，避免返回旧片段。受影响页面存在 `embedding-revisions/<sha256(page_id)>.revision` 时拒绝：上游此值是全文与有效嵌入配置的复合签名，未取得可验证配置时既不猜测新值，也不把旧值冒充有效。无关 revision 保持原样。这是明确兼容边界，不能宣称覆盖所有索引历史格式。
 
 2026-09-17：真实 v1/v2 多来源合成数据库迁移测试通过，全部向量位模式与无关行保留，重连搜索返回新摘要及原共享页面。实际迁移后的共享索引副本同时通过固定上游 Rust 重扫和真实前端外部模式；`attempts=[]`、`frontendSideEffects=[]`、`changedTasks=[]`。本地证据位于临时目录 `organizer-shared-index-VzREP6/external-proof.json`。这是已核验 Arrow schema 的真实数据库验证，不等同于完整桌面重启或未来 LanceDB 版本保证。
+
+## T4/T5 同批联合回归
+
+`test/combined-migration.test.js` 通过 HTTP 公开规划/审核执行入口，在同一验证副本同时迁移历史 Raw、修复未移动共享来源的双链反链和移动来源的相对出链、更新两份 Raw 的 SHA256/MD5、保留共享 sources 与全部缓存产出，并迁移真实 LanceDB v1/v2 摘要标识。测试逐行对比迁移前后记录（仅允许计划中的 page_id/chunk_id 改变），验证向量、片段文本、共享知识正文、缓存时间和原库/备份均保留，重连搜索仍定位新摘要与共享页面。刻意不修改已有 Wiki 索引正文片段，保留该未适配场景的阻塞。
+
+普通运行使用固定重扫响应，仅验证模块协作。设置 `ORGANIZER_TEST_WSL_RESCAN=1` 或 `ORGANIZER_RESCAN_BINARY` 时改为真实重扫；`ORGANIZER_KEEP_PROOF=1` 保留合成三份数据。2026-09-17，真实 WSL Rust 测试 1/1 通过，同一迁移后副本交给固定上游前端外部模式 1/1 通过，`attempts=[]`、`frontendSideEffects=[]`、`changedTasks=[]`、`error=null`。证据为临时目录 `organizer-combined-gaSJFC/external-proof.json`，不包含真实用户资料。
