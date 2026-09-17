@@ -5,6 +5,7 @@ function invalidate() { frozen = null; document.querySelector('#review').hidden 
 function add(item = {}) {
   const tr = document.createElement('tr'); tr.dataset.id = item.id ?? '';
   for (const field of ['enabled', 'from', 'to']) { const td = document.createElement('td'), input = document.createElement('input'); input.dataset.field = field;
+    input.setAttribute('aria-label', `第 ${rows.children.length + 1} 项${{ enabled: '纳入批次', from: '旧路径', to: '新路径' }[field]}`);
     if (field === 'enabled') { input.type = 'checkbox'; input.checked = item.status !== 'excluded'; }
     else { input.value = item[field] ?? ''; input.placeholder = 'raw/sources/目录/材料.md'; input.required = true; }
     input.addEventListener('input', invalidate); td.append(input); tr.append(td);
@@ -12,7 +13,9 @@ function add(item = {}) {
   const state = document.createElement('td'); state.textContent = `${labels[item.status] ?? '待预检'}${item.reason ? `：${item.reason.message}` : ''}`; tr.append(state); rows.append(tr);
 }
 document.querySelector('#add').addEventListener('click', () => { add(); invalidate(); });
+document.querySelector('[name=reportPath]').addEventListener('input', invalidate);
 document.querySelector('#evolution').addEventListener('change', async event => {
+  evolutionPlan = null; invalidate();
   try { const data = JSON.parse(await event.target.files[0].text()); evolutionPlan = data.evolution?.frozenPlan ?? data.frozenPlan ?? data; rows.replaceChildren(); invalidate(); status.textContent = '目录方案已加载，请生成完整映射进行审核。'; }
   catch { status.textContent = '无法读取目录方案，请选择已确认方案的 JSON 文件。'; }
 });
@@ -36,6 +39,7 @@ document.querySelector('#batch').addEventListener('submit', async event => {
 document.querySelector('#execute').addEventListener('click', async event => {
   if (!frozen || !document.querySelector('#approve').checked) { status.textContent = '请先审核并确认可执行范围。'; return; }
   event.target.disabled = true;
+  status.textContent = '正在执行批量迁移并验证链接、索引和真实重扫结果…';
   try {
     const result = await call('execute', { planId: frozen.planId, planManifestPath: frozen.planManifestPath, planHash: frozen.logicalPlanHash, approved: true, writersPaused: document.querySelector('[name=writersPaused]').checked });
     document.querySelector('#result-summary').textContent = `${result.status === 'complete' ? '全部成功' : result.status === 'partial' ? '部分成功，仍有未执行项目' : '执行失败，现场已保留'}。恢复日志：${result.journalPath}`;
