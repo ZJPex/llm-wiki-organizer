@@ -20,7 +20,7 @@ const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],qu
 const vector=new Field('vector',new FixedSizeList(3,new Field('item',new Float32(),true)),false);
 const v1schema=new Schema([new Field('page_id',new Utf8(),false),vector]);
 const v2schema=new Schema([new Field('chunk_id',new Utf8(),false),new Field('page_id',new Utf8(),false),new Field('chunk_index',new Uint32(),false),new Field('chunk_text',new Utf8(),false),new Field('heading_path',new Utf8(),false),vector]);
-async function fixture(t,{indexed=true,badSchema=false,revision=false,retained=false}={}) {
+async function fixture(t,{indexed=true,badSchema=false,revision=false,retained=false,longValidation=false}={}) {
  const root=await mkdtemp(path.join(tmpdir(),'organizer-combined-'));
  if(!retained)t.after(()=>rm(root,{recursive:true,force:true}));
  const libraryPath=path.join(root,'library'),wikiSourcePath=path.join(root,'upstream');
@@ -48,7 +48,8 @@ async function fixture(t,{indexed=true,badSchema=false,revision=false,retained=f
  const snapshot={};
  for(const file of (await inventory(libraryPath)).files.filter(file=>file.path.endsWith('.md'))){const bytes=await readFile(path.join(libraryPath,file.path));snapshot[file.path]={hash:createHash('md5').update(bytes).digest('hex'),size:bytes.length,mtimeMs:Math.trunc((await lstat(path.join(libraryPath,file.path))).mtimeMs)};}
  await write('.llm-wiki/file-snapshot.json',{version:1,updatedAt:1,files:snapshot});
- const backup=await createBackup({libraryPath,wikiSourcePath,backupPath:path.join(root,'backup'),validationPath:path.join(root,'validation'),writersPaused:true},{inspect:input=>preflight(input,{sourceManifest})});
+ const validationPath=path.join(root,longValidation?'validation-'+ 'x'.repeat(150):'validation');
+ const backup=await createBackup({libraryPath,wikiSourcePath,backupPath:path.join(root,'backup'),validationPath,writersPaused:true},{inspect:input=>preflight(input,{sourceManifest})});
  assert.equal(backup.status,'complete',JSON.stringify(backup.errors));
  return {root,backup,input:{reportPath:backup.reportPath,oldPath:'raw/sources/old.md',newPath:'raw/sources/主题/new.md',writersPaused:true}};
 }
@@ -56,6 +57,15 @@ async function fixture(t,{indexed=true,badSchema=false,revision=false,retained=f
 function plainRows(rows) {
  return rows.map(row=>Object.fromEntries(Object.entries(row).map(([name,value])=>[name,name==='vector'?Array.from(value):value]))).sort((a,b)=>(a.chunk_id??a.page_id).localeCompare(b.chunk_id??b.page_id));
 }
+test('Windows 过长的 LanceDB 副本路径在规划阶段阻止，来源与备份不变',{skip:process.platform!=='win32'},async t=>{
+ const f=await fixture(t,{longValidation:true});
+ const before=(await inventory(f.backup.validationPath)).hash;
+ const service=createMigrationService({verify:quiet});
+ await assert.rejects(service.plan(f.input),/Windows LanceDB 写入路径过长/);
+ assert.equal((await inventory(f.backup.validationPath)).hash,before);
+ assert.equal((await inventory(f.backup.originalPath)).hash,f.backup.baseline.hash);
+ assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
+});
 test('公开迁移批次协作：Raw反链、共享来源及真实v1/v2向量同步保留',async t=>{
  const f=await fixture(t,{retained:process.env.ORGANIZER_KEEP_PROOF==='1'});
  const dbBefore=await connect(path.join(f.backup.validationPath,'.llm-wiki/lancedb'));

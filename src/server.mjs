@@ -7,10 +7,14 @@ import { createBackup } from './backup.js';
 import { createPlanningService } from './planning.js';
 
 import { createMigrationService } from './migration.js';
+import {createBatchService} from './batches.js';
+import {createRestructureStrategy} from './restructure.js';
+import {createInboxStrategy} from './inbox.js';
 import { createRecoveryService } from './recovery.js';
 import { createOriginalExecutionService } from './original-execution.js';
 
 export function createApp({ inspect = preflight, backup = createBackup, planning = createPlanningService(), migration = createMigrationService(), recovery = createRecoveryService(), original = createOriginalExecutionService(), batches = null } = {}) {
+  batches??=createBatchService({planning,backup,migration,recovery,original,strategies:{restructure:createRestructureStrategy(),inbox:createInboxStrategy()}});
   const token = randomBytes(32).toString('hex');
   return http.createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${req.socket.localPort}`;
@@ -25,14 +29,14 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
         const script=req.url.endsWith('.js');res.writeHead(200,{'Content-Type':`${script?'text/javascript':'text/html'}; charset=utf-8`});
         return res.end(await readFile(new URL(`../public/original.${script?'js':'html'}`,import.meta.url)));
       }
-      const assets = { '/inbox': ['inbox.html','text/html'], '/inbox.js': ['inbox.js','text/javascript'], '/recovery': ['recovery.html','text/html'], '/recovery.js': ['recovery.js','text/javascript'], '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
+      const assets = { '/restructure': ['restructure.html','text/html'], '/restructure.js': ['restructure.js','text/javascript'], '/batch-ui.js': ['batch-ui.js','text/javascript'], '/preflight': ['index.html','text/html'], '/inbox': ['inbox.html','text/html'], '/inbox.js': ['inbox.js','text/javascript'], '/recovery': ['recovery.html','text/html'], '/recovery.js': ['recovery.js','text/javascript'], '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
       if (req.method === 'GET' && assets[req.url]) {
         const [file, type] = assets[req.url];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
         return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
-      const batchAction = /^\/api\/batches\/(create|get|list|analyzeNext|reviewItem|treeAction|prepareSlice|validateSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
+      const batchAction = /^\/api\/batches\/(create|get|list|analyzeNext|reviewItem|treeAction|prepareSlice|validateSlice|cancelSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
       const recoveryAction = /^\/api\/recovery\/(inspect|plan|execute|get)$/.exec(req.url)?.[1];
       const migrationAction = /^\/api\/migration\/(plan|execute)$/.exec(req.url)?.[1];
       const originalAction = /^\/api\/original\/(prepare|execute|get)$/.exec(req.url)?.[1];
