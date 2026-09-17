@@ -1,0 +1,8 @@
+{
+  "src/lib/project-file-sync.ts": "86d552af160081e382bdff909cd39d247a3f33761615c0e3d622b2dcf5f6b6c6",
+  "src/lib/path-utils.ts": "7ba009d3a3ea8ddf72b5dda2933b10a14cb64e186dbc41cb9f979c6a19885be3",
+  "src/lib/source-watch-config.ts": "f9051ebf5b1de12877228eb7e5611645ce7b3e432a3641c5af1506155616b368",
+  "src/lib/source-watch-defaults.json": "7ae0b0dfeef0cfbf80d56243a5b13acc259ea1b1828176fa6c7090b008cde408",
+  "src/stores/wiki-store.ts": "f255f29d214a174b975382f2c4579c8ca7e97a78877145a7ff2b4388bf9e7397",
+  "src/stores/file-sync-store.ts": "8c7cd31139d1e480dea08cee015fb95caf251ed4fd86ab959150606b0302e297"
+}
