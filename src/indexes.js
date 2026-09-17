@@ -67,6 +67,24 @@ export async function analyzeIndexes({baseline,root,moves,changes}) {
   } catch(error) {if(error.code==='UNSUPPORTED_INDEX')throw error;fail('无法读取受支持的 LanceDB 格式，原数据保持不变');}
 }
 export function indexPlanReport(plan) {return {status:plan.status,tables:plan.tables.map(({name,affectedRows})=>({name,affectedRows})),pageMoves:plan.pageMoves};}
+export async function verifyIndexContents(root,expected) {
+  if(expected.status==='absent')return {status:'absent',tables:[]};
+  const {connect}=await import('@lancedb/lancedb');
+  const db=await connect(path.join(root,'.llm-wiki/lancedb')), tables=[];
+  for(const prior of expected.tables) {
+    const current=await readTable(db,prior.name);
+    if(rowFingerprint(current.rows)!==prior.baselineHash)fail('恢复索引与备份的全部行及向量不一致');
+    const searched=[];
+    for(const pageId of new Set(current.rows.map(row=>row.page_id))) {
+      const row=current.rows.find(row=>row.page_id===pageId);
+      const found=await current.table.vectorSearch(row.vector).where(`page_id = ${scalar(pageId)}`).limit(1).toArray();
+      if(found[0]?.page_id!==pageId)fail('恢复索引重新打开后无法检索既有页面');
+      searched.push(pageId);
+    }
+    tables.push({name:prior.name,rows:current.rows.length,vectorsPreserved:true,searched});
+  }
+  return {status:'verified',tables};
+}
 export async function executeIndexMigration(root,plan) {
   if(plan.status==='absent')return {status:'absent',tables:[]};
   const {connect}=await import('@lancedb/lancedb');

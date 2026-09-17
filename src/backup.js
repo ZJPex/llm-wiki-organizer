@@ -30,7 +30,7 @@ export async function safePath(input, { missingLeaf = false } = {}) {
   return realpath(absolute);
 }
 
-async function layout(root) {
+export async function layout(root) {
   const directories = [];
   async function scan(relative) {
     const full = path.join(root, relative);
@@ -54,7 +54,7 @@ export async function verifyBackup(backupPath, expected, expectedDirectories) {
   return actual;
 }
 
-async function copyTree(source, destination, baseline, directories, copy) {
+export async function copyTree(source, destination, baseline, directories, copy = copyFile) {
   for (const dir of directories) await mkdir(path.join(destination, dir), { recursive: true });
   for (const file of baseline.files) {
     const from = path.join(source, file.path);
@@ -71,14 +71,16 @@ async function copyTree(source, destination, baseline, directories, copy) {
 }
 
 // 仅修改已核验的结构化位置。未知字段中的绝对路径或旧库身份阻止验证副本启用。
-export async function relocateValidationCopy(validationPath, originalPath, { originalAliases = [] } = {}) {
+export async function relocateValidationCopy(validationPath, originalPath, { originalAliases = [], targetId = randomUUID(), expectedSourceId } = {}) {
   const state = name => path.join(validationPath, '.llm-wiki', name);
   let identity;
   try { identity = JSON.parse(await readFile(state('project.json'), 'utf8')); }
   catch { fail('UNKNOWN_IDENTITY', '缺少可校验的 project.json，不能隔离验证副本身份'); }
   if (typeof identity.id !== 'string' || !identity.id || !Number.isFinite(identity.createdAt)) fail('UNKNOWN_IDENTITY', 'project.json 格式无法安全重定位');
   const oldId = identity.id;
-  const newId = randomUUID();
+  if (expectedSourceId !== undefined && oldId !== expectedSourceId) fail('UNKNOWN_IDENTITY', '重定位来源身份与冻结证据不符');
+  if (typeof targetId !== 'string' || !targetId) fail('UNKNOWN_IDENTITY', '重定位目标身份无效');
+  const newId = targetId;
   const changes = [];
   const data = new Map();
   async function load(name) {
@@ -117,7 +119,7 @@ export async function relocateValidationCopy(validationPath, originalPath, { ori
     const transformed = data.has(file.path) ? JSON.stringify(data.get(file.path), null, 2) : null;
     const bytes = transformed === null ? await readFile(path.join(validationPath, file.path)) : Buffer.from(transformed);
     const texts = [bytes.toString('utf8'), bytes.toString('utf16le')];
-    if (texts.some(text => oldPaths.some(root => text.toLowerCase().includes(root.toLowerCase())) || text.includes(oldId))) {
+    if (texts.some(text => oldPaths.filter(root => normalize(root) !== normalize(validationPath)).some(root => text.toLowerCase().includes(root.toLowerCase())) || (newId !== oldId && text.includes(oldId)))) {
       fail('UNKNOWN_RELOCATION', `发现未适配的原库路径或身份引用：${file.path}`);
     }
   }
