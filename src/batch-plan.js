@@ -72,6 +72,11 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
   const single = !input.mappings && !input.evolutionPlan;
   const state = async name => JSON.parse(await readFile(path.join(root, '.llm-wiki', name), 'utf8'));
   const originalCache = await state('ingest-cache.json');
+  // Windows 缓存可能使用同一目录的短路径；先还原真实位置再核验库内关联。
+  for (const entry of Object.values(originalCache.entries ?? {})) {
+    if (Array.isArray(entry?.filesWritten)) entry.filesWritten = await Promise.all(entry.filesWritten.map(async value =>
+      typeof value === 'string' && (path.isAbsolute(value) || path.win32.isAbsolute(value)) ? await canonicalPath(value) : value));
+  }
   const documents = await Promise.all(baseline.files.filter(file => /\.md$/i.test(file.path)).map(async file => { const text = await readFile(path.join(root, file.path), 'utf8'); return { path: file.path, text, frontmatter: sourceFrontmatter(text) }; }));
   const dependencies = [];
   const block = (item, code, message) => { if (item.status === 'pending') { item.status = 'blocked'; item.reason = { code, message }; } };
