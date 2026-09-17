@@ -22,7 +22,7 @@ function showReport(selector, data, completed = false) {
     line('同步缓存来源', data.associations.updatedCaches.join('、') || '无');
   }
   if (data.indexes) {
-    line('索引状态', data.indexes.status === 'absent' ? '没有需要迁移的索引' : '已校验结构，等待路径迁移');
+    line('索引状态', data.indexes.status === 'absent' ? '没有需要迁移的索引' : data.indexProof?.status === 'verified' ? '迁移后验证通过' : '已校验结构，尚未完成迁移验证');
     for (const table of data.indexes.tables) line(`索引表 ${table.name}`, `${table.affectedRows} 条受影响记录`);
   }
   if (completed) {
