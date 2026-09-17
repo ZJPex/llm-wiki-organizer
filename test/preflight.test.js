@@ -15,8 +15,8 @@ async function setup(t) {
   for (const dir of ['raw/sources/topic', 'wiki', '.llm-wiki']) await mkdir(path.join(libraryPath, dir), { recursive: true });
   await mkdir(wikiSourcePath);
   await writeFile(path.join(wikiSourcePath, 'package.json'), JSON.stringify({ name: 'llm-wiki', version: '0.6.11' }));
-  await writeFile(path.join(wikiSourcePath, 'fixture.ts'), '源码指纹测试替身');
-  const sourceManifest = { version: '0.6.11', commit: 'test-only', files: { 'fixture.ts': digest('源码指纹测试替身') } };
+  await writeFile(path.join(wikiSourcePath, 'fixture.ts'), '源码指纹测试替身\n第二行\n');
+  const sourceManifest = { version: '0.6.11', commit: 'test-only', files: { 'fixture.ts': digest('源码指纹测试替身\n第二行\n') } };
   const write = (file, value) => writeFile(path.join(libraryPath, file), typeof value === 'string' ? value : JSON.stringify(value));
   await write('raw/sources/录屏_1920.md', '# 保留的历史材料');
   await write('raw/sources/topic/new.md', '# 新材料');
@@ -75,4 +75,13 @@ test('跨站请求和无会话请求无法访问本地路径', async t => {
   const f = await setup(t);
   assert.equal((await fetch(`${f.base}/api/preflight`, { method: 'POST', body: '{}' })).status, 403);
   assert.equal((await fetch(`${f.base}/api/session`, { headers: { Origin: 'https://example.com' } })).status, 403);
+});
+
+test('相同源码的 LF 与 CRLF 检出共享版本指纹，内容变化仍被拒绝', async t => {
+  const f = await setup(t);
+  assert.equal((await f.request()).version.verifiedSource, true);
+  await writeFile(path.join(f.wikiSourcePath, 'fixture.ts'), '源码指纹测试替身\r\n第二行\r\n');
+  assert.equal((await f.request()).version.verifiedSource, true);
+  await writeFile(path.join(f.wikiSourcePath, 'fixture.ts'), '源码指纹测试替身\n改变第二行\n');
+  assert.equal((await f.request()).version.verifiedSource, false);
 });

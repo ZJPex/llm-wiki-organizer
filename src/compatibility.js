@@ -44,7 +44,7 @@ export async function preflight({ libraryPath, wikiSourcePath, writersPaused = f
       report.version.detected = pkg.version;
       if (pkg.name !== 'llm-wiki' || pkg.version !== sourceManifest.version) throw new Error();
       for (const [file, hash] of Object.entries(sourceManifest.files)) {
-        if (digest(await readFile(path.join(wikiSourcePath, file))) !== hash) throw new Error();
+        if (digest((await readFile(path.join(wikiSourcePath, file), 'utf8')).replace(/\r\n/g, '\n')) !== hash) throw new Error();
       }
       report.version.verifiedSource = true;
       report.version.sourceCommit = sourceManifest.commit;
