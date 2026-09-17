@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raw 整理器</title><link rel="stylesheet" href="/style.css"></head>
+<body><main><h1>Raw 整理器</h1><p>选择知识库，先了解材料和关联状态。本步骤只读，不调用模型。</p>
+<form id="preflight"><label>知识库绝对路径<input name="libraryPath" required placeholder="E:\知识库"></label><label>Wiki 源码目录（版本核验依据）<input name="wikiSourcePath" required placeholder="E:\3_work\3_41_llmwiki"></label><label class="check"><input type="checkbox" name="writersPaused">我已暂停 Wiki、Obsidian、同步程序等写入</label><button>开始只读预检</button></form>
+<p id="status" role="status"></p><section id="report" hidden><h2>预检报告</h2><p id="summary"></p><ul id="blockers"></ul><button id="download">下载可复查基线报告</button><h3>Markdown 源文件</h3><table><thead><tr><th>源身份</th><th>摄取状态</th></tr></thead><tbody id="sources"></tbody></table></section></main><script type="module" src="/app.js"></script></body></html>

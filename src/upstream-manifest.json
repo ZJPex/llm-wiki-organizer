@@ -1,0 +1,10 @@
+{
+  "version": "0.6.11",
+  "commit": "e8082119649e6a8e1cf85eaf289adcabfdf39d4e",
+  "files": {
+    "src/lib/ingest-cache.ts": "62ff4139f6bb71182095c52076dc96a69c8ff17643805a76c84e76a9dc7383cb",
+    "src/lib/ingest-queue.ts": "5e61086bd71888fdc24fdcf1f444baf1666bae0c3049139daf8a8a0a7d6ceb8a",
+    "src/lib/source-identity.ts": "12b2f3493ccd34b975c78834607abbdb12dde1a4d6b2ee0c67f3c92d78bac0a4",
+    "src-tauri/src/commands/file_sync.rs": "3589a52844b4fff07208e4f6812f1bacb21362e5246d911d312f3f64152a9cd0"
+  }
+}
