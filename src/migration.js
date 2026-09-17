@@ -6,7 +6,9 @@ import { inventory } from './compatibility.js';
 import { safePath, verifyBackup } from './backup.js';
 import { sourceFrontmatter, summaryCandidates } from './source-format.js';
 import { modelGuard, nativeRescanVerifier, requireQuietRescan } from './migration-verifier.js';
-import { rejectComplexLinks, rejectSharedOutputs, rejectIndexes } from './migration-policy.js';
+import { rejectComplexLinks } from './migration-policy.js';
+import { analyzeSharedOutputs, migrateAllCacheOutputs } from './shared-outputs.js';
+import { analyzeIndexes, executeIndexMigration, indexPlanReport } from './indexes.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const key = value => value.replaceAll('\\', '/').toLowerCase();
@@ -43,7 +45,7 @@ async function loadReport(reportPath) {
   return backup;
 }
 
-export function createMigrationService({ verify = nativeRescanVerifier(), checkpoint = async () => {}, analyzeLinks = rejectComplexLinks, analyzeShared = rejectSharedOutputs, analyzeIndex = rejectIndexes } = {}) {
+export function createMigrationService({ verify = nativeRescanVerifier(), checkpoint = async () => {}, analyzeLinks = rejectComplexLinks, analyzeShared = analyzeSharedOutputs, analyzeIndex = analyzeIndexes } = {}) {
   const plans = new Map();
   async function plan(input) {
     if (input.writersPaused !== true) fail('WRITERS_NOT_PAUSED', '请先暂停全部外部写入');
@@ -57,7 +59,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     if (!files.has(oldPath)) fail('SOURCE_MISSING', '旧源不存在');
     const conflicts = target => [...files.keys()].some(name => key(name) === key(target));
     if (conflicts(newPath)) fail('TARGET_EXISTS', '新位置已存在，不覆盖文件');
-    await analyzeIndex({ baseline, root, oldPath, newPath });
+
     const oldIdentity = oldPath.slice('raw/sources/'.length);
     const newIdentity = newPath.slice('raw/sources/'.length);
     const state = async name => JSON.parse(await readFile(path.join(root, '.llm-wiki', name), 'utf8'));
@@ -67,7 +69,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     if (cache.entries[newIdentity]) fail('TARGET_EXISTS', '新身份已有摄取记录');
     const outputs = entry.filesWritten.map(file => relativeOutput(root, file));
     if (outputs.some(file => !files.has(file) || !file.startsWith('wiki/') || !file.endsWith('.md'))) fail('UNKNOWN_ASSOCIATION', '缓存产出缺失或非 Wiki Markdown');
-    await analyzeShared({ cache, oldIdentity, outputs, relativeOutput: value => relativeOutput(root, value) });
+    const shared = await analyzeShared({ cache, oldIdentity, outputs, files, relativeOutput: value => relativeOutput(root, value) });
     const candidates = summaryCandidates(oldIdentity).map(slug => `wiki/sources/${slug}.md`).filter(file => files.has(file));
     if (candidates.length !== 1 || !outputs.includes(candidates[0])) fail('UNKNOWN_SUMMARY', '摘要缺失、多候选并存或未被缓存关联');
     const oldSummary = candidates[0];
@@ -86,7 +88,6 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       if (file.path.startsWith('wiki/')) {
         const matches = source => key(referenceIdentity(source)) === key(oldIdentity) || (sameBasenames === 1 && !referenceIdentity(source).includes('/') && key(referenceIdentity(source)) === key(path.posix.basename(oldIdentity)));
         if (frontmatter.sources.some(matches)) {
-          if (frontmatter.sources.length !== 1) fail('SHARED_OUTPUT', '页面具有多个来源，需后续共享关联迁移支持');
           const updated = frontmatter.replace(frontmatter.sources.map(source => matches(source) ? newIdentity : source));
           if (sourceFrontmatter(updated).body !== frontmatter.body) fail('BODY_CHANGED', '知识正文不应变化');
           changes.set(file.path, updated); affectedPages.push(file.path);
@@ -95,8 +96,9 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     }
     await analyzeLinks({ root, baseline, documents, moves, changes, affectedPages });
     if (outputs.some(file => !affectedPages.includes(file))) fail('MISSING_SOURCE_REFERENCE', '缓存产出缺少可唯一确定的 sources 引用');
+    const indexPlan = await analyzeIndex({ baseline, root, oldPath, newPath, moves, changes });
     const knownState = new Set(['.llm-wiki/project.json', '.llm-wiki/ingest-cache.json', '.llm-wiki/file-snapshot.json', '.llm-wiki/ingest-queue.json', '.llm-wiki/file-change-queue.json']);
-    for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !knownState.has(file.path))) {
+    for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !knownState.has(file.path) && !indexPlan.knownStatePaths.includes(file.path))) {
       const text = await readFile(path.join(root, file.path), 'utf8');
       if ([oldIdentity, oldSummary, path.posix.basename(oldSummary)].some(value => text.includes(value))) fail('UNKNOWN_STATE_REFERENCE', '未适配状态引用了受影响源或摘要');
     }
@@ -111,11 +113,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       }
       if (changed) changes.set(`.llm-wiki/${name}`, JSON.stringify(value, null, 2));
     }
-    cache.entries[newIdentity] = { ...entry, filesWritten: entry.filesWritten.map(file => {
-      if (relativeOutput(root, file) !== oldSummary) return file;
-      return path.isAbsolute(file) || path.win32.isAbsolute(file) ? `${root.replaceAll('\\', '/')}/${newSummary}` : newSummary;
-    }) };
-    delete cache.entries[oldIdentity];
+    const updatedCaches = migrateAllCacheOutputs(cache, root, oldIdentity, newIdentity, oldSummary, newSummary, value => relativeOutput(root, value));
     changes.set('.llm-wiki/ingest-cache.json', JSON.stringify(cache, null, 2));
     const snapshot = await state('file-snapshot.json');
     if (snapshot.version !== 1 || !snapshot.files || !snapshot.files[oldPath]) fail('UNKNOWN_SNAPSHOT', '源快照不存在或版本未知');
@@ -126,14 +124,15 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     }
     const id = randomUUID();
     const result = { planId: id, status: 'awaiting-review', batchId: backup.batchId, validationPath: root, mapping: { oldPath, newPath }, summaryMapping: { oldPath: oldSummary, newPath: newSummary }, affectedPages,
+      associations: { ...shared, updatedCaches }, indexes: indexPlanReport(indexPlan),
       operations: [...moves.map(move => ({ type: 'move', ...move })), ...[...changes.keys()].map(file => ({ type: 'metadata', path: file })), { type: 'snapshot', path: '.llm-wiki/file-snapshot.json' }], baselineHash: baseline.hash, originalExecutionAllowed: false };
-    plans.set(id, { result, backup, reportPath: input.reportPath, baseline, moves, changes, snapshot, used: false });
+    plans.set(id, { result, backup, reportPath: input.reportPath, baseline, moves, changes, snapshot, indexPlan, used: false });
     return result;
   }
   async function executePlan(input) {
     const current = plans.get(input.planId);
     if (!current || current.used || input.approved !== true || input.writersPaused !== true) fail('REVIEW_REQUIRED', '计划不存在、已使用或尚未审核确认');
-    const { backup, baseline, moves, changes, snapshot } = current;
+    const { backup, baseline, moves, changes, snapshot, indexPlan } = current;
     await loadReport(current.reportPath);
     if ((await inventory(backup.validationPath)).hash !== baseline.hash) fail('STALE_PLAN', '计划后验证副本发生变化');
     current.used = true;
@@ -159,7 +158,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       if (guard.attempts.length) fail('MODEL_ATTEMPT', '验证期间尝试调用模型');
       const afterRescan = await inventory(backup.validationPath);
       if (afterRescan.hash !== baseline.hash) fail('VERIFIER_MUTATION', '预验证改变了知识库正文或其他状态');
-      const affected = new Set([...moves.map(move => move.from), ...changes.keys(), '.llm-wiki/file-snapshot.json']);
+      const affected = new Set([...moves.map(move => move.from), ...changes.keys(), ...indexPlan.knownStatePaths, '.llm-wiki/file-snapshot.json']);
       for (const file of affected) journal.preimages.push({ path: file, contentBase64: (await readFile(path.join(backup.validationPath, file))).toString('base64') });
       journal.phase = result.phase = 'writing'; await persist();
       for (const [file, content] of changes) {
@@ -180,6 +179,8 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
         const full = path.join(backup.validationPath, file); const bytes = await readFile(full); const stat = await lstat(full);
         snapshot.files[file] = { ...snapshot.files[file], hash: md5(bytes), size: bytes.length, mtimeMs: Math.trunc(stat.mtimeMs) };
       }
+      result.indexProof = await executeIndexMigration(backup.validationPath, indexPlan);
+      journal.completed.push({ type: 'indexes', proof: result.indexProof }); await persist();
       snapshot.updatedAt = Date.now();
       await writeFile(path.join(backup.validationPath, '.llm-wiki/file-snapshot.json'), JSON.stringify(snapshot, null, 2));
       journal.completed.push({ type: 'snapshot' }); journal.phase = result.phase = 'verification-after'; await persist();

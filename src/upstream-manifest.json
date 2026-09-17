@@ -5,6 +5,8 @@
     "src/lib/ingest-cache.ts": "c9390fbd7ef5d411f176f960d12fdc222c3689aff2f5a1a2087c9a6be1b222c9",
     "src/lib/ingest-queue.ts": "fc434c4c8bf26c5b0b87f1740f4da3290d548fa80425b2798a837959addaa368",
     "src/lib/source-identity.ts": "dc17c6ce3a06c97bf757fe4c60ce9d0371529474f73791737c2cfb96f1510357",
-    "src-tauri/src/commands/file_sync.rs": "0e3f24f3dd9d9bf84411809b712d02a81204012ddec13ecbc8f86662af1eb117"
+    "src-tauri/src/commands/file_sync.rs": "0e3f24f3dd9d9bf84411809b712d02a81204012ddec13ecbc8f86662af1eb117",
+    "src-tauri/src/commands/vectorstore.rs": "8476dd490a1d5af76706e172e7605d7d67abdd3ff0be74297984ee769e132ffd",
+    "src-tauri/src/commands/page_embedding.rs": "2292720419f6ed04f0e5f73f36200c83019ddf80cab1657097e254274ce06924"
   }
 }
