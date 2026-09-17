@@ -37,3 +37,15 @@ jobs:
         run: node scripts/upstream-rescan/prepare.mjs .upstream "$RUNNER_TEMP/organizer-rescan"
       - name: 验证真实文件扫描与变更队列
         run: cargo test --locked --manifest-path "$RUNNER_TEMP/organizer-rescan/Cargo.toml"
+      - name: 构建真实重扫程序
+        run: cargo build --locked --manifest-path "$RUNNER_TEMP/organizer-rescan/Cargo.toml"
+      - name: 准备固定上游前端与副作用守卫
+        run: node scripts/upstream-frontend/prepare.mjs .upstream "$RUNNER_TEMP/organizer-frontend"
+      - name: 安装锁定的集成测试依赖
+        working-directory: ${{ runner.temp }}/organizer-frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: 验证上游前端消费真实扫描结果
+        working-directory: ${{ runner.temp }}/organizer-frontend
+        env:
+          UPSTREAM_RESCAN_COMMAND: '["${{ runner.temp }}/organizer-rescan/target/debug/organizer-upstream-rescan"]'
+        run: npx --no-install vitest run --config vitest.config.mjs
