@@ -14,8 +14,6 @@ for (const [relative, expected] of Object.entries(hashes)) {
 }
 await mkdir(destination);
 
-await copyFile(path.join(here, 'frontend.test.ts'), path.join(destination, 'frontend.test.ts'));
-await writeFile(path.join(destination, 'package.json'), JSON.stringify({type:'module',private:true,dependencies:{vitest:'4.1.4',zustand:'5.0.12',react:'19.0.0','@tauri-apps/api':'2.11.0','@tauri-apps/plugin-http':'2.5.9'}}));
+for (const file of ['frontend.test.ts','external-copy.mjs','package.json','package-lock.json']) await copyFile(path.join(here,file),path.join(destination,file));
 await writeFile(path.join(destination, 'vitest.config.mjs'), `export default ${JSON.stringify({root:destination,cacheDir:path.join(destination,'.vite'),resolve:{alias:{'@':path.join(upstream,'src'),'zustand':path.join(destination,'node_modules/zustand/esm/index.mjs'),'react':path.join(destination,'node_modules/react/index.js'),'@tauri-apps/api':path.join(destination,'node_modules/@tauri-apps/api'),'@tauri-apps/plugin-http':path.join(destination,'node_modules/@tauri-apps/plugin-http/dist-js/index.js')}},test:{include:['frontend.test.ts'],environment:'node',testTimeout:30000}},null,2)}`);
 console.log(JSON.stringify({upstream,destination,filesVerified:Object.keys(hashes).length}));
-
