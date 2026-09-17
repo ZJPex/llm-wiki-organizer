@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
+import { canonicalPath } from './filesystem-paths.js';
 
 const presets = {
   openai: { provider: 'openai', model: 'gpt-4o', maxContextSize: 128000 },
@@ -11,7 +11,15 @@ const presets = {
 export async function readModelConfig({ configPath, libraryPath }) {
   const state = JSON.parse(await readFile(configPath, 'utf8'));
   const projects = [...(state.recentProjects ?? []), state.lastProject].filter(Boolean);
-  const project = projects.find(p => path.resolve(p.path) === path.resolve(libraryPath));
+  const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  const library = normalize(await canonicalPath(libraryPath));
+  let project;
+  for (const candidate of projects) {
+    if (typeof candidate.path !== 'string') continue;
+    try {
+      if (normalize(await canonicalPath(candidate.path)) === library) { project = candidate; break; }
+    } catch { /* 过期或不可读取的项目记录不参与当前知识库匹配。 */ }
+  }
   const override = state.projectLlmOverrides?.[project?.id];
   const presetId = override?.enabled ? override.presetId : state.taskModelRouting?.ingestPresetId;
   let config = state.llmConfig;

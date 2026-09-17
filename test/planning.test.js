@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../src/server.mjs';
@@ -39,6 +39,13 @@ test('HTTP 命名方案：全文覆盖、配置优先级、审核与重启复用
   assert.equal(await readFile(path.join(sourceRoot, '1080p.md'), 'utf8'), content);
   const files = await readdir(stateDirectory); assert.ok(!(await readFile(path.join(stateDirectory, files[0]), 'utf8')).includes('secret'));
   await writeFile(path.join(sourceRoot, '1080p.md'), content + '已变'); assert.equal((await call('confirm', { name: 'changed.md' })).status, 400);
+  const registryAlias = path.join(temp, 'registry-alias'); await symlink(sourceRoot, registryAlias, 'junction');
+  config.recentProjects[0].path = process.platform === 'win32' ? registryAlias.toUpperCase() : registryAlias;
+  await writeFile(configPath, JSON.stringify(config));
+  await writeFile(path.join(sourceRoot, 'alias.md'), content);
+  assert.equal((await call('analyze', { identity: 'alias.md' })).status, 200);
+  assert.equal(requests.at(-1).effective.model, 'project-model');
+  assert.equal(requests.at(-1).effective.apiKey, 'project-secret');
   config.projectLlmOverrides.wiki.enabled = false; await writeFile(configPath, JSON.stringify(config));
   await writeFile(path.join(sourceRoot, 'route.md'), content); await call('analyze', { identity: 'route.md' }); assert.equal(requests.at(-1).effective.model, 'route-model');
 });
