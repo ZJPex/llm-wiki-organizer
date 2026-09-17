@@ -30,3 +30,8 @@ Windows 调用 WSL 二进制时，设置 UPSTREAM_RESCAN_WSL=1（将临时目录
 外部模式核验三份目录不重叠、报告身份与三个 project.json 一致、副本 UUID 独立且没有符号链接/硬链接。只运行现有副本验证，不建立初始快照、不删除副本。输出含 attempts、frontendSideEffects、rustProof 及 error；副作用被上游捕获后仍会记录并令测试失败。输出采用独占创建防止覆盖既有证据。
 
 2026-09-17 外部模式实测通过：真实 Rust + 上游前端零副作用，外部副本与报告保留。安全入口测试覆盖原库/备份路径、相对路径、库内报告与身份相同拒绝；原四项对照回归通过。
+# 恢复目录验证
+
+`UPSTREAM_VALIDATION_MANIFEST` 也可指向 T7 成功恢复的 `.result.json`，此时 `UPSTREAM_VALIDATION_COPY` 必须是报告中的全新独立恢复目录。工具只接受验证副本角色的独立目录恢复，校验恢复报告、恢复计划、迁移日志、备份证据链，以及完整恢复与备份内容；拒绝原库与恢复备份。完整契约见 `docs/recovery-contract.md`。
+
+外部模式会在真实上游扫描后恢复 `file-snapshot.json` 和 `file-change-queue.json` 原字节，报告 `stateHashes.before/after`，所以验证不会使成功迁移或恢复的内容基线失效。

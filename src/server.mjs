@@ -7,8 +7,9 @@ import { createBackup } from './backup.js';
 import { createPlanningService } from './planning.js';
 
 import { createMigrationService } from './migration.js';
+import { createRecoveryService } from './recovery.js';
 
-export function createApp({ inspect = preflight, backup = createBackup, planning = createPlanningService(), migration = createMigrationService() } = {}) {
+export function createApp({ inspect = preflight, backup = createBackup, planning = createPlanningService(), migration = createMigrationService(), recovery = createRecoveryService() } = {}) {
   const token = randomBytes(32).toString('hex');
   return http.createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${req.socket.localPort}`;
@@ -19,15 +20,16 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
     if (req.headers.host !== `127.0.0.1:${req.socket.localPort}` || (req.headers.origin && req.headers.origin !== origin)) return send(403, { error: '仅接受本地页面请求' });
     try {
       if (req.method === 'GET' && req.url === '/api/session') return send(200, { token });
-      const assets = { '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
+      const assets = { '/recovery': ['recovery.html','text/html'], '/recovery.js': ['recovery.js','text/javascript'], '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
       if (req.method === 'GET' && assets[req.url]) {
         const [file, type] = assets[req.url];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
         return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
+      const recoveryAction = /^\/api\/recovery\/(inspect|plan|execute|get)$/.exec(req.url)?.[1];
       const migrationAction = /^\/api\/migration\/(plan|execute)$/.exec(req.url)?.[1];
-      if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !migrationAction && !planningAction)) return send(404, { error: '入口不存在' });
+      if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !migrationAction && !planningAction && !recoveryAction)) return send(404, { error: '入口不存在' });
       if (req.headers['x-organizer-token'] !== token || req.headers['content-type'] !== 'application/json') return send(403, { error: '会话校验失败，请刷新本地页面' });
       let body = '';
       const bodyLimit = migrationAction ? 2 * 1024 * 1024 : 16384;
@@ -36,6 +38,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       try { input = JSON.parse(body); } catch { return send(400, { error: '请求格式无效' }); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) return send(400, { error: '请求格式无效' });
       if (planningAction) { try { return send(200, await planning[planningAction](input)); } catch { return send(400, { error: '命名操作失败：请检查配置支持范围、源文件变化、证据、名称及冲突；未修改来源。' }); } }
+      if (recoveryAction) { try { return send(200, await recovery[recoveryAction](input)); } catch(error) { return send(400, {error:error.message,code:error.code??'RECOVERY_FAILED'}); } }
       if (migrationAction) {
         try { return send(200, await migration[migrationAction](input)); }
         catch (error) { return send(400, { error: error.message, code: error.code ?? 'MIGRATION_FAILED' }); }

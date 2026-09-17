@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import {createHash} from 'node:crypto';
 
 const guard = vi.hoisted(() => ({ calls: [] as string[], scans: [] as any[] }));
 function forbidden(kind: string): never { guard.calls.push(kind); throw new Error(`禁止的迁移副作用：${kind}`); }
@@ -109,10 +110,13 @@ describe.skipIf(externalMode)('真实 Rust 重扫结果由固定上游前端消�
 
 describe.runIf(externalMode)('显式外部验证副本', () => {
   it('真实重扫和前端消费不产生迁移副作用', async () => {
+    const preserved=await Promise.all(['file-snapshot.json','file-change-queue.json'].map(async name=>({name,file:path.join(root,'.llm-wiki',name),bytes:await fs.readFile(path.join(root,'.llm-wiki',name))})));
     let error: string | null = null;
     try { await rescanProjectFileSync(project, watch as any); }
     catch (caught) { error = String(caught); }
-    const proof = {schemaVersion:1,projectId:project.id,validationPath:root,error,attempts:[...guard.calls],frontendSideEffects:[...guard.calls],rustProof:guard.scans[0] ?? null};
+    finally {for(const file of preserved)await fs.writeFile(file.file,file.bytes);}
+    const stateHashes=await Promise.all(preserved.map(async file=>({path:file.name,before:createHash('sha256').update(file.bytes).digest('hex'),after:createHash('sha256').update(await fs.readFile(file.file)).digest('hex')})));
+    const proof = {schemaVersion:1,projectId:project.id,validationPath:root,error,attempts:[...guard.calls],frontendSideEffects:[...guard.calls],rustProof:guard.scans[0] ?? null,stateHashes,recoveryReportHash:external.recoveryReportHash??null};
     await fs.writeFile(external.resultFile,JSON.stringify(proof,null,2),{flag:'wx'});
     expect(error).toBeNull();
     expect(guard.scans).toHaveLength(1);
