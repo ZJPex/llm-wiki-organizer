@@ -44,7 +44,12 @@ async function copyResumable(source,destination,baseline,directories){
  await copyTree(source,destination,baseline,directories,async(from,to,flags)=>{if(!await exists(to))await copyFile(from,to,flags);else if(await digestFile(from)!==await digestFile(to))fail('RECOVERY_COPY_CONFLICT','复制恢复内容冲突');});
 }
 async function captureState(root){return Object.fromEntries(await Promise.all(stateFiles.map(async file=>[file,(await readFile(path.join(root,'.llm-wiki',file))).toString('base64')])));}
-async function resetState(root,contents){for(const [file,content] of Object.entries(contents))await writeFile(path.join(root,'.llm-wiki',file),Buffer.from(content,'base64'));}
+async function applyBinding(root,binding){
+ const current=await captureState(root);
+ // 先核验所有文件，再写入；只允许日志记录的前态、后态或两者组成的中断状态。
+ for(const file of stateFiles)if(current[file]!==binding.before[file]&&current[file]!==binding.after[file])fail('RECOVERY_BIND_CONFLICT','恢复绑定状态出现用户修改或未知内容，保留全部现场并停止');
+ for(const file of stateFiles)if(current[file]!==binding.after[file])await writeFile(path.join(root,'.llm-wiki',file),Buffer.from(binding.after[file],'base64'));
+}
 async function validateLibrary(root,projectId,expectedIndexes,verify,models){
  const baseline=await inventory(root),files=new Map(baseline.files.map(f=>[f.path,f]));
  const cache=await json(path.join(root,'.llm-wiki/ingest-cache.json'));
@@ -67,7 +72,7 @@ async function validateLibrary(root,projectId,expectedIndexes,verify,models){
  finally{for(const entry of preserved)await writeFile(entry.file,entry.bytes);}
  return {sources:Object.keys(cache.entries).length,links,indexes,proof};
 }
-function publicReport(report){const {bindingPreimages,...safe}=report;return safe;}
+function publicReport(report){const {bindingPreimages,restoreBinding,finalBinding,...safe}=report;return safe;}
 export function createRecoveryService({verify=nativeRescanVerifier(),checkpoint=async()=>{},space=statfs}={}){
  async function inspectRecovery({journalPath}){const {journal,manifest,backup,target}=await readRecoveryEvidence(journalPath);const actual=await inventory(target);return {status:'inspectable',targetRole:journal.targetRole,targetRoot:target,logicalPlanHash:manifest.logicalPlanHash,phase:journal.phase,completed:journal.completed??[],intents:journal.intents??[],changes:differences(actual,journal.beforeBaseline??manifest.beforeBaseline),backupPath:backup.backupPath,actualBaseline:actual};}
  async function planRecovery(input){
@@ -113,14 +118,20 @@ export function createRecoveryService({verify=nativeRescanVerifier(),checkpoint=
    if(!report.completed.includes('park')&&!report.completed.includes('install')&&await exists(plan.targetRoot))await verifyBackup(plan.targetRoot,plan.beforeBaseline,plan.beforeDirectories);
    if(plan.mode==='new-directory')await step('scene-copy',async()=>{await copyResumable(plan.targetRoot,plan.scenePath,plan.beforeBaseline,plan.beforeDirectories);await verifyBackup(plan.targetRoot,plan.beforeBaseline,plan.beforeDirectories);});
    await step('restore-copy',async()=>{await copyResumable(backup.backupPath,plan.stagingPath,backup.baseline,backup.directories);});
-   await step('restore-bind',async()=>{await resetState(plan.stagingPath,await captureState(backup.backupPath));await relocateValidationCopy(plan.stagingPath,backup.originalPath,{targetId:plan.stagingProjectId,expectedSourceId:backup.relocation.originalProjectId});});
+   await step('restore-bind',async()=>{
+    if(!report.restoreBinding){const before=await captureState(plan.stagingPath),expected=await captureState(backup.backupPath);if(planDigest(before)!==planDigest(expected))fail('RECOVERY_BIND_CONFLICT','恢复暂存状态偏离完整备份，保留现场');const prepared=await relocateValidationCopy(plan.stagingPath,backup.originalPath,{targetId:plan.stagingProjectId,expectedSourceId:backup.relocation.originalProjectId,prepareOnly:true});report.restoreBinding={before,after:prepared.stateContents};await save();}
+    await applyBinding(plan.stagingPath,report.restoreBinding);
+   });
    await step('restore-verify',async()=>{report.stagingProof=await validateLibrary(plan.stagingPath,plan.stagingProjectId,expectedIndexes,verify,models);report.stagingBaseline=await inventory(plan.stagingPath);report.bindingPreimages=await captureState(plan.stagingPath);await save();});
    if(plan.mode==='same-location'){
     // rename 与 completed 之间进程可能退出，续作依靠目录存在性及清单识别已完成换位。
     await step('park',async()=>{if(await exists(plan.scenePath)){if(await exists(plan.targetRoot))fail('RECOVERY_CONFLICT','现场与原目标同时存在，不能猜测换位状态');await verifyBackup(plan.scenePath,plan.beforeBaseline,plan.beforeDirectories);}else{await verifyBackup(plan.targetRoot,plan.beforeBaseline,plan.beforeDirectories);await rename(plan.targetRoot,plan.scenePath);} });
     await step('install',async()=>{if(await exists(plan.stagingPath)){if(await exists(plan.targetRoot))fail('TARGET_EXISTS','原位置被占用，不能覆盖');await verifyBackup(plan.stagingPath,report.stagingBaseline);await rename(plan.stagingPath,plan.targetRoot);}else{await verifyBackup(plan.targetRoot,report.stagingBaseline);} });
    }
-   await step('final-bind',async()=>{await resetState(plan.destination,report.bindingPreimages);await relocateValidationCopy(plan.destination,plan.stagingPath,{targetId:plan.targetProjectId,expectedSourceId:plan.stagingProjectId});});
+   await step('final-bind',async()=>{
+    if(!report.finalBinding){const before=await captureState(plan.destination);if(planDigest(before)!==planDigest(report.bindingPreimages))fail('RECOVERY_BIND_CONFLICT','最终绑定前状态已改变，保留现场');const prepared=await relocateValidationCopy(plan.destination,plan.stagingPath,{targetId:plan.targetProjectId,expectedSourceId:plan.stagingProjectId,prepareOnly:true});report.finalBinding={before,after:prepared.stateContents};await save();}
+    await applyBinding(plan.destination,report.finalBinding);
+   });
    await step('final-verify',async()=>{report.verification=await validateLibrary(plan.destination,plan.targetProjectId,expectedIndexes,verify,models);report.afterBaseline=await inventory(plan.destination);await verifyBackup(backup.backupPath,backup.baseline,backup.directories);await verifyBackup(plan.scenePath,plan.beforeBaseline,plan.beforeDirectories);if(plan.mode==='new-directory')await verifyBackup(plan.targetRoot,plan.beforeBaseline,plan.beforeDirectories);});
    delete report.error;report.status='complete';report.phase='complete';report.restoreRoot=plan.destination;report.projectId=plan.targetProjectId;report.backupUnchanged=true;report.finishedAt=new Date().toISOString();
   }catch(error){report.status='failed';report.error={code:error.code??'RECOVERY_FAILED',message:error.message};}

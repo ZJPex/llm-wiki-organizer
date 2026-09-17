@@ -1,3 +1,4 @@
+import {listenForBrowser} from './helpers/http-server.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -73,6 +74,22 @@ test('真实子进程在park换位后退出，只凭磁盘记录继续原位置�
  await assert.rejects(exec(process.execPath,['--input-type=module','-e',code,plan.recoveryPlanPath]),error=>error.code===77);
  const interrupted=await service.get({recoveryPlanPath:plan.recoveryPlanPath});assert.equal(interrupted.phase,'park');assert.equal(interrupted.status,'running');
  const result=await createRecoveryService({verify:quiet}).execute({recoveryPlanPath:plan.recoveryPlanPath,approved:true,writersPaused:true});assert.equal(result.status,'complete',JSON.stringify(result.error));
+});
+
+test('final-bind 写后进程退出：续作只接受已记录状态，不覆盖用户 project/cache 修改',async t=>{
+ for(const mode of ['same-location','new-directory'])for(const changed of [null,'project.json','ingest-cache.json'])await t.test(`${mode} ${changed??'无用户修改可继续'}`,async t=>{
+  const f=await failedFixture(t),verify=process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():quiet,service=createRecoveryService({verify});
+  const plan=await service.plan({journalPath:f.failed.journalPath,mode,...(mode==='new-directory'?{destination:path.join(f.root,'recovered')}:{}),writersPaused:true});
+  const code=`import {createRecoveryService} from ${JSON.stringify(new URL('../src/recovery.js',import.meta.url).href)};import {nativeRescanVerifier} from ${JSON.stringify(new URL('../src/migration-verifier.js',import.meta.url).href)};const service=createRecoveryService({verify:process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():${quiet.toString().replace('UPSTREAM_COMMIT',JSON.stringify(UPSTREAM_COMMIT))},checkpoint:async stage=>{if(stage==='final-bind')process.exit(78)}});await service.execute({recoveryPlanPath:process.argv[1],approved:true,writersPaused:true});`;
+  await assert.rejects(exec(process.execPath,['--input-type=module','-e',code,plan.recoveryPlanPath]),error=>error.code===78);
+  let expected;
+  if(changed){const file=path.join(plan.destination,'.llm-wiki',changed),value=JSON.parse(await readFile(file,'utf8'));value.userNote='中断后用户新增状态，必须保留';expected=JSON.stringify(value);await writeFile(file,expected);}
+  const server=createApp({recovery:createRecoveryService({verify})});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(`${base}/api/session`)).json();
+  const response=await fetch(`${base}/api/recovery/execute`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({recoveryPlanPath:plan.recoveryPlanPath,approved:true,writersPaused:true})});const result=await response.json();assert.equal(result.restoreBinding,undefined);assert.equal(result.finalBinding,undefined);
+  if(changed){assert.equal(result.status,'failed');assert.equal(result.error.code,'RECOVERY_BIND_CONFLICT');assert.equal(await readFile(path.join(plan.destination,'.llm-wiki',changed),'utf8'),expected);}else assert.equal(result.status,'complete',JSON.stringify(result.error));
+  assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
+ });
 });
 
 test('公开恢复入口还原共享来源、绝对缓存、链接与真实v1/v2索引，备份保持原样',async t=>{

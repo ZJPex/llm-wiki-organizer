@@ -1,3 +1,4 @@
+import {listenForBrowser} from './helpers/http-server.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -75,15 +76,38 @@ test('库内缺cache但已有待执行任务不能当新文件，外部同内容
  await assert.rejects(external.strategy.discover({input:{...external.batch,sourceRoot:external.f.root}}),{code:'INVALID_INBOX'});
 });
 
+test('冻结后新来源被摄取或新增关联，最终归档必须失效并保源',async t=>{
+ for(const relation of ['cache','wiki'])await t.test(relation,async t=>{
+  const value=await fixture(t,{internal:true}),{slice,source}=await reviewed(value),library=value.batch.libraryPath;
+  if(relation==='cache'){const file=path.join(library,'.llm-wiki/ingest-cache.json'),cache=JSON.parse(await readFile(file,'utf8'));cache.entries['inbox/录屏.md']={hash:source.hash,timestamp:2,filesWritten:['wiki/new.md']};await writeFile(file,JSON.stringify(cache));}
+  await writeFile(path.join(library,'wiki/new.md'),'---\nsources: ["inbox/录屏.md"]\n---\n新关联');
+  const result=await value.strategy.archive({batch:value.batch,slice,artifactDirectory:value.batch.artifactRoot});assert.equal(result.status,'failed');assert.equal(result.error.code,'STALE_ASSOCIATION');await lstat(source.currentPath);await assert.rejects(lstat(source.targetPath),{code:'ENOENT'});
+ });
+});
+
+test('新增归档遇本地图片、材料引用或未移动材料反链时明确保留，HTTP外链不阻塞',async t=>{
+ for(const kind of ['image','html','outgoing','backlink','http'])await t.test(kind,async t=>{
+  const value=await fixture(t),source=value.batch.sources[0];
+  if(kind==='image'){await writeFile(path.join(value.batch.sourceRoot,'image.png'),'image');await writeFile(source.currentPath,value.text+'\n![图](image.png)');}
+  if(kind==='html')await writeFile(source.currentPath,value.text+'\n<img src=image.png>');
+  if(kind==='outgoing')await writeFile(source.currentPath,value.text+'\n[材料](other.md)');
+  if(kind==='backlink')await writeFile(path.join(value.batch.sourceRoot,'other.md'),'[引用](录屏.md)');
+  if(kind==='http')await writeFile(source.currentPath,value.text+'\n[网址](https://example.com/page)');
+  source.hash=digest(await readFile(source.currentPath));
+  if(kind==='http'){const {slice}=await reviewed(value);assert.equal((await value.strategy.archive({batch:value.batch,slice,artifactDirectory:value.batch.artifactRoot})).status,'complete');}
+  else{await assert.rejects(reviewed(value),{code:'UNSUPPORTED_NEW_LINKS'});await lstat(source.currentPath);}
+ });
+});
+
 for(const history of [false,true])test(`公开Inbox批次完整闭环：牵动历史=${history}，阶段分离、重启复用与身份名字同步`,async t=>{
  let interrupted=false;
  const value=await fixture(t,{history,checkpoint:async stage=>{if(!history&&stage==='copied'&&!interrupted){interrupted=true;throw new Error('公开入口模拟归档中断');}}}),{batch:input,strategy,planning,f}=value;
  const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
  const verify=process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():quiet;
  const options={strategies:{inbox:strategy},planning,stateDirectory:path.join(f.root,'batch-state'),backup:args=>createBackup(args,{inspect:args=>preflight(args,{sourceManifest:{version:'0.6.11',commit:UPSTREAM_COMMIT,files:{fixture:digest('verified-test-format')}}})}),migration:createMigrationService({verify}),recovery:createRecoveryService({verify}),original:createOriginalExecutionService({verify})};
- const server=createApp({batches:createBatchService(options)});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const server=createApp({batches:createBatchService(options)});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
  const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(`${base}/api/session`)).json();
- assert.equal((await fetch(`${base}/inbox`)).status,200);assert.ok((await(await fetch(`${base}/inbox.js`)).text()).includes('/api/batches/'));
+ assert.equal((await fetch(`${base}/inbox`)).status,200);assert.ok((await(await fetch(`${base}/inbox.js`)).text()).includes('requestBatch as api'));
  let batch;
  const call=async(action,extra={},expected=200)=>{const response=await fetch(`${base}/api/batches/${action}`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({batchId:batch?.batchId,revision:batch?.revision,...extra})});const body=await response.json();assert.equal(response.status,expected,JSON.stringify(body));if(expected===200)batch=body;return body;};
  await call('create',{...input,mode:'inbox'});await call('analyzeNext',{limit:5});const sourceId=batch.sources[0].sourceId;
@@ -96,4 +120,26 @@ for(const history of [false,true])test(`公开Inbox批次完整闭环：牵动�
  if(history){assert.deepEqual(batch.slices[0].historicalResult.modelAttempts,[]);assert.equal(await readFile(path.join(input.libraryPath,'raw/sources/002 一致性/old.md'),'utf8'),'# 已摄取的短源');}
  const targetRoot=path.join(input.libraryPath,'raw/sources'),state=await planning.list({sourceRoot:targetRoot,libraryPath:input.libraryPath});assert.equal(state.entries[batch.sources[0].currentIdentity].confirmedName,'缓存一致性.md');
  const restarted=createBatchService(options);const repeat=await restarted.applySlice({batchId:batch.batchId,revision:batch.revision,sliceId,approved:true,writersPaused:true});assert.equal(repeat.slices[0].status,'complete');assert.equal(repeat.sources[0].sourceId,sourceId);
+});
+
+test('HTTP 新材料审核后关联变化持久失效；复制后重启不得删除已摄取来源',async t=>{
+ for(const stage of ['fresh','before-archive','copied'])await t.test(stage,async t=>{
+  const value=await fixture(t,{internal:true,checkpoint:async checkpoint=>{if(stage==='copied'&&checkpoint==='copied')throw new Error('模拟复制后退出');}}),{batch:input,planning,f}=value;
+  const options={planning,stateDirectory:path.join(f.root,'public-batch-state'),strategies:{inbox:value.strategy}};
+  let server,base,token,batch;
+  async function start(){server=createApp({batches:createBatchService(options)});await listenForBrowser(server);base=`http://127.0.0.1:${server.address().port}`;({token}=await(await fetch(`${base}/api/session`)).json());}
+  await start();t.after(()=>new Promise(resolve=>server.close(resolve)));
+  async function call(action,extra={},expected=200){const response=await fetch(`${base}/api/batches/${action}`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({batchId:batch?.batchId,revision:batch?.revision,...extra})});const body=await response.json();assert.equal(response.status,expected,JSON.stringify(body));if(expected===200)batch=body;return body;}
+  await call('create',{...input,mode:'inbox'});await call('analyzeNext');const source=batch.sources[0];
+  for(const patch of [{action:'confirmName',name:'缓存一致性.md'},{action:'classify'},{action:'confirmCategory',category:'001 缓存'}])await call('reviewItem',{sourceId:source.sourceId,...patch});
+  let sliceId;
+  if(stage!=='fresh'){await call('prepareSlice',{writersPaused:true});sliceId=batch.slices[0].sliceId;await call('validateSlice',{sliceId,approved:true,writersPaused:true});await call('prepareOriginal',{sliceId,writersPaused:true});}
+  if(stage==='copied'){await call('applySlice',{sliceId,approved:true,writersPaused:true},400);await call('get');assert.equal(batch.slices[0].archiveResult.items[0].status,'copied');await new Promise(resolve=>server.close(resolve));options.strategies={inbox:createInboxStrategy()};await start();}
+  const cachePath=path.join(input.libraryPath,'.llm-wiki/ingest-cache.json'),cache=JSON.parse(await readFile(cachePath,'utf8'));cache.entries['inbox/录屏.md']={hash:source.hash,timestamp:2,filesWritten:['wiki/new.md']};await writeFile(cachePath,JSON.stringify(cache));await writeFile(path.join(input.libraryPath,'wiki/new.md'),'---\nsources: ["inbox/录屏.md"]\n---\n刚完成摄取');
+  await call(stage==='fresh'?'prepareSlice':'applySlice',{sliceId,approved:true,writersPaused:true},400);await call('get');
+  assert.equal(batch.error.code,stage==='fresh'?'STALE_ASSOCIATION':'ARCHIVE_FAILED');assert.equal(batch.phase,'needs-review');
+  if(stage==='fresh'){assert.equal(batch.sources[0].status,'needs-analysis');assert.equal(batch.sources[0].selected,false);}else assert.equal(batch.slices[0].archiveResult.error.code,'STALE_ASSOCIATION');
+  assert.equal(await readFile(source.currentPath,'utf8'),value.text);assert.equal(JSON.parse(await readFile(cachePath,'utf8')).entries['inbox/录屏.md'].timestamp,2);
+  if(stage==='copied')assert.equal(await readFile(path.join(input.libraryPath,'raw/sources/001 缓存/缓存一致性.md'),'utf8'),value.text);
+ });
 });

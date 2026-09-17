@@ -46,6 +46,13 @@ function destination(value) {
   try { decoded = decodeURIComponent(raw.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~\\])/g, '$1')); } catch { return { invalid: true, raw, suffix }; }
   return { raw, suffix, decoded, external: /^(?:[a-z][a-z0-9+.-]*:|\/|\\)/i.test(decoded) };
 }
+// 供新增归档的保守边界使用，复用与历史迁移相同的代码遮罩及链接目标解码。
+export function localReferences(text) {
+  const parsed=tokens(text);
+  const references=parsed.tokens.map(token=>({...token,...destination(token.value)}));
+  for(const match of parsed.visible.matchAll(/\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)){const value=match[1]??match[2]??match[3];references.push({kind:'html',value,...destination(value)});}
+  return references.filter(reference=>!reference.external&&(reference.invalid||reference.decoded));
+}
 function candidates(file, token, files) {
   const target = destination(token.value);
   if (target.invalid) return { ...target, candidates: [] };

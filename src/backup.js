@@ -71,7 +71,7 @@ export async function copyTree(source, destination, baseline, directories, copy 
 }
 
 // 仅修改已核验的结构化位置。未知字段中的绝对路径或旧库身份阻止验证副本启用。
-export async function relocateValidationCopy(validationPath, originalPath, { originalAliases = [], targetId = randomUUID(), expectedSourceId } = {}) {
+export async function relocateValidationCopy(validationPath, originalPath, { originalAliases = [], targetId = randomUUID(), expectedSourceId, prepareOnly = false } = {}) {
   const state = name => path.join(validationPath, '.llm-wiki', name);
   let identity;
   try { identity = JSON.parse(await readFile(state('project.json'), 'utf8')); }
@@ -123,6 +123,7 @@ export async function relocateValidationCopy(validationPath, originalPath, { ori
       fail('UNKNOWN_RELOCATION', `发现未适配的原库路径或身份引用：${file.path}`);
     }
   }
+  if (prepareOnly) return { stateContents: Object.fromEntries([...data].map(([file,value])=>[path.posix.basename(file),Buffer.from(JSON.stringify(value,null,2)).toString('base64')])) };
   for (const [file, value] of data) {
     await writeFile(path.join(validationPath, file), JSON.stringify(value, null, 2));
     changes.push(file);
