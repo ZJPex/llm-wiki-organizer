@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { canonicalPath } from './filesystem-paths.js';
+import { proposeEvolution, freezeEvolution } from './evolution.js';
+import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -141,6 +143,42 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
       return entry;
+    }),
+    evolve: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const file = await sourceFile(input.sourceRoot, input.identity);
+      const entry = saved.data.entries[input.identity];
+      if (!entry?.confirmedName || entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('请先完成当前来源的命名审核');
+      await state(input.sourceRoot, input.categoryRoot);
+      const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
+      const proposal = await proposeEvolution({ entry, root: input.categoryRoot, startCategory: input.startCategory, generate, config });
+      if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('规划期间来源变化');
+      saved.data.evolution = { ...proposal, identity: entry.identity, sourceHash: entry.hash, status: 'needs-review' };
+      await persist(saved.file, saved.data);
+      return saved.data.evolution;
+    }),
+    confirmEvolution: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const proposal = saved.data.evolution;
+      if (!proposal || !Array.isArray(input.operations)) throw new Error('缺少待审核演化方案');
+      const source = await sourceFile(input.sourceRoot, proposal.identity);
+      if (proposal.sourceHash !== hash(await readFile(source, 'utf8')) || (await inventory(proposal.catalog.root)).hash !== proposal.baseline.hash || (await categoryCatalog(proposal.catalog.root)).hash !== proposal.catalog.hash) throw new Error('演化基线已失效');
+      const allowedScopes = new Set(proposal.visited.map(v => v.scope));
+      for (const operation of input.operations) {
+        const affected = operation.from ?? operation.parent;
+        if (![...allowedScopes].some(scope => affected === scope || path.posix.dirname(affected) === scope || (!scope && !affected.includes('/')))) throw new Error('审核变更超出已检查范围，请重新规划');
+      }
+      const names = {};
+      const canonicalSourceRoot = await realpath(input.sourceRoot);
+      for (const entry of Object.values(saved.data.entries)) {
+        const relative = path.relative(proposal.catalog.root, path.resolve(canonicalSourceRoot, entry.identity)).split(path.sep).join('/');
+        if (!relative.startsWith('..') && entry.confirmedName) names[relative] = entry.confirmedName;
+      }
+      const plan = freezeEvolution(proposal, input.operations, names);
+      if (input.previewOnly) return { ...proposal, preview: plan };
+      saved.data.evolution = { ...proposal, status: 'confirmed', frozenPlan: plan };
+      await persist(saved.file, saved.data);
+      return saved.data.evolution;
     }),
     list: input => serial(async () => (await state(input.sourceRoot, input.libraryPath)).data),
   };
