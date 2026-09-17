@@ -52,6 +52,22 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   }
   async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await rename(temporary, file); }
   return {
+    // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
+    commitIdentityMappings: input => serial(async () => {
+      const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
+      const transaction=path.join(path.dirname(source.file),`identity-${hash(input.executionId)}.json`);
+      let pending;try{pending=JSON.parse(await readFile(transaction,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+      if(pending?.status==='complete')return {status:'complete',reused:true};
+      if(!pending){
+        const fromRoot=await realpath(input.sourceRoot),toRoot=await realpath(input.targetRoot),original=structuredClone(source.data.entries),nextSource=structuredClone(source.data),nextTarget=source.file===target.file?nextSource:structuredClone(target.data);
+        const mappings=input.mappings.map(mapping=>({...mapping,oldIdentity:path.relative(fromRoot,mapping.from).replaceAll('\\','/'),newIdentity:path.relative(toRoot,mapping.to).replaceAll('\\','/')}));
+        for(const mapping of mappings){if(mapping.oldIdentity.startsWith('../')||mapping.newIdentity.startsWith('../')||path.isAbsolute(mapping.oldIdentity)||path.isAbsolute(mapping.newIdentity))throw new Error('身份映射越界');if(hash(await readFile(mapping.to))!==mapping.hash)throw new Error('身份同步目标与成功证据不一致');delete nextSource.entries[mapping.oldIdentity];}
+        for(const mapping of mappings){const entry=original[mapping.oldIdentity];if(!entry)continue;if(nextTarget.entries[mapping.newIdentity]&&!mappings.some(other=>other.oldIdentity===mapping.newIdentity&&source.file===target.file))throw new Error('已有命名状态冲突，未覆盖');const {classification,frozenPlan,...kept}=entry;nextTarget.entries[mapping.newIdentity]={...kept,identity:mapping.newIdentity,hash:mapping.hash,previousIdentity:mapping.oldIdentity,executionId:input.executionId,reviewRequired:true};}
+        pending={status:'prepared',sourceFile:source.file,targetFile:target.file,nextSource,nextTarget};await persist(transaction,pending);
+      }
+      await persist(pending.sourceFile,pending.nextSource);if(pending.targetFile!==pending.sourceFile)await persist(pending.targetFile,pending.nextTarget);
+      await persist(transaction,{...pending,status:'complete'});return {status:'complete'};
+    }),
     analyze: input => serial(async () => {
       const { sourceRoot, identity } = input;
       const file = await sourceFile(sourceRoot, identity);
