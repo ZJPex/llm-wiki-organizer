@@ -35,3 +35,11 @@ Windows 调用 WSL 二进制时，设置 UPSTREAM_RESCAN_WSL=1（将临时目录
 `UPSTREAM_VALIDATION_MANIFEST` 也可指向 T7 成功恢复的 `.result.json`，此时 `UPSTREAM_VALIDATION_COPY` 必须是报告中的全新独立恢复目录。工具只接受验证副本角色的独立目录恢复，校验恢复报告、恢复计划、迁移日志、备份证据链，以及完整恢复与备份内容；拒绝原库与恢复备份。完整契约见 `docs/recovery-contract.md`。
 
 外部模式会在真实上游扫描后恢复 `file-snapshot.json` 和 `file-change-queue.json` 原字节，报告 `stateHashes.before/after`，所以验证不会使成功迁移或恢复的内容基线失效。
+
+## T8 正式原库执行后的外部验证
+
+`UPSTREAM_VALIDATION_COPY` 也可显式指定已完成 T8 正式执行的原库；此时 `UPSTREAM_VALIDATION_MANIFEST` 必须为真实 `${authorizationPlanPath}.result.json`，不能传 T2 报告冒充副本。输出仍指定一个全新、四份数据目录之外的 `UPSTREAM_VALIDATION_RESULT`。其他命令和 WSL 参数不变。
+
+入口独立核验结果哈希、授权哈希、逻辑计划及完整清单、成功原库/副本日志、同计划恢复演练、完整备份与四目录当前基线。仅接受全部所选项目 succeeded 的 complete/partial，不扩大 excluded 范围；原库必须保留备份中的原 UUID，副本及恢复目录身份独立。报告增加 `targetRole:original`、`originalResultHash`、`authorizationHash`、`logicalPlanHash`。扫描期间继续保护 file-snapshot/file-change-queue 原字节，并报告前后哈希；生成、视觉、嵌入、摄取及隐式迁移出口均独立记录并阻断。
+
+2026-09-17：页面正式执行后的合成原库 `organizer-combined-gaSJFC/library` 通过外部联合模式 1/1；本地证据 `organizer-combined-gaSJFC/original-frontend-proof.json` 中 changedTasks、attempts、frontendSideEffects 均为空，两个状态文件哈希前后一致。该证明覆盖真实 Rust 重扫与固定上游前端消费者，不等同于完整桌面 watcher 或模型网络验收。

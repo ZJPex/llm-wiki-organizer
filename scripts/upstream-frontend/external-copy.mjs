@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import { validateOriginalExecution } from './external-original.mjs';
 const digest=value=>createHash('sha256').update(value).digest('hex');
 async function readJson(file){return JSON.parse(await fs.readFile(file,'utf8'));}
 function check(record,field){const {[field]:expected,...unsigned}=record;if(digest(JSON.stringify(unsigned))!==expected)throw new Error('恢复证据哈希不匹配');}
@@ -23,6 +24,9 @@ export async function validateExternalCopy(env) {
   const root = env.UPSTREAM_VALIDATION_COPY, manifestFile = env.UPSTREAM_VALIDATION_MANIFEST, resultFile = env.UPSTREAM_VALIDATION_RESULT;
   for (const p of [root,manifestFile,resultFile]) if (!p || !path.isAbsolute(p)) throw new Error('外部副本、备份报告和输出报告必须显式给出绝对路径');
   const manifest = JSON.parse(await fs.readFile(manifestFile,'utf8'));
+  if (manifest.targetRole === 'original' || manifest.authorizationPlanPath) {
+    return validateOriginalExecution({root, manifestFile, resultFile}, {readJson, check, matches, noLinks, key, inside, digest});
+  }
   if(manifest.recoveryId){
     check(manifest,'reportHash');
     const plan=await readJson(manifest.recoveryPlanPath);check(plan,'recoveryPlanHash');
