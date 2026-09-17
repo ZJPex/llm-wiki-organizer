@@ -5,8 +5,14 @@ const execute = promisify(execFile);
 export const UPSTREAM_COMMIT = 'e8082119649e6a8e1cf85eaf289adcabfdf39d4e';
 
 // 二进制位置只从启动环境读取，网页不能传命令、参数模板或可执行文件。
-export function nativeRescanVerifier(binary = process.env.ORGANIZER_RESCAN_BINARY) {
+export function nativeRescanVerifier(binary = process.env.ORGANIZER_RESCAN_BINARY, { wslDistribution = process.env.ORGANIZER_RESCAN_WSL_DISTRIBUTION } = {}) {
   return async ({ validationPath, projectId }) => {
+    if (wslDistribution) {
+      if (process.platform !== 'win32' || !binary || !path.posix.isAbsolute(binary) || !/^[A-Za-z]:[\\/]/.test(validationPath)) throw Object.assign(new Error('WSL 验证需要 Windows 本地盘副本及 Linux 验证器绝对路径'), { code: 'VERIFIER_UNAVAILABLE' });
+      const linuxPath = validationPath.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`);
+      const { stdout } = await execute('wsl.exe', ['-d', wslDistribution, '--', binary, '--validation-copy', linuxPath, projectId], { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+      return JSON.parse(stdout);
+    }
     if (!binary || !path.isAbsolute(binary)) throw Object.assign(new Error('尚未配置已构建的原生上游重扫验证器'), { code: 'VERIFIER_UNAVAILABLE' });
     const { stdout } = await execute(binary, ['--validation-copy', validationPath, projectId], { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
     return JSON.parse(stdout);

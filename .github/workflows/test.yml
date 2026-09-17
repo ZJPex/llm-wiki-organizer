@@ -10,6 +10,7 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
         node: [22, 24]
@@ -49,3 +50,7 @@ jobs:
         env:
           UPSTREAM_RESCAN_COMMAND: '["${{ runner.temp }}/organizer-rescan/target/debug/organizer-upstream-rescan"]'
         run: npx --no-install vitest run --config vitest.config.mjs
+      - name: 用真实上游扫描验证迁移后的合成副本
+        env:
+          ORGANIZER_RESCAN_BINARY: ${{ runner.temp }}/organizer-rescan/target/debug/organizer-upstream-rescan
+        run: npm test

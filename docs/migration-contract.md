@@ -18,6 +18,8 @@
 
 默认执行器从进程环境 `ORGANIZER_RESCAN_BINARY` 读取已构建的原生验证器绝对路径。Web 请求不能指定命令或参数模板。构建方式见 `scripts/upstream-rescan/README.md`。迁移前后都执行固定 0.6.11 的真实 rescan，要求 changedTasks 为空、没有 file-sync://changed 事件且队列没有 pending/processing；不能仅看退出码或空队列。上游会刷新快照时间和清理完成任务，成功检查后恢复这两个文件的验证前字节，以保留无关状态；重扫证据完整留在 journal。
 
+Windows 也可设置 `ORGANIZER_RESCAN_WSL_DISTRIBUTION=Ubuntu-24.04`，并将 `ORGANIZER_RESCAN_BINARY` 设为该分发版内的 Linux 程序绝对路径。此时仅接受 Windows 本地盘路径，程序通过固定 `wsl.exe` 参数调用并映射到 `/mnt/<盘符>/`，不用 shell 拼接路径。选择的分发版必须挂载该盘；Web 页面仍不能修改执行器配置。
+
 `modelGuard()` 提供生成、视觉、嵌入拒绝出口，任何尝试即使被内部捕获也使执行失败。迁移代码本身没有模型、网络或摄取依赖。`verify` 与 `checkpoint` 是受信任程序测试注入点，不从 HTTP 读取。
 
 真实集成测试优先使用 `ORGANIZER_RESCAN_BINARY` 指定原生二进制，CI 构建完成后可设置该变量运行 `npm test`。本机也可在 PowerShell 设置 `ORGANIZER_TEST_WSL_RESCAN=1` 后 `node --test test/migration.test.js`，使用已安装隔离 WSL 验证器；`ORGANIZER_KEEP_PROOF=1` 会保留此测试创建的合成三份数据供联合前端检查。普通 `npm test` 对没有构建器的环境跳过这一外部集成测试，不能把跳过算作已验证。
