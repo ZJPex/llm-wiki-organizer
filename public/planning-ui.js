@@ -20,3 +20,27 @@ section.querySelector('#confirm-name').addEventListener('submit', async event =>
 section.querySelector('#export-plan').addEventListener('click', async () => {
   try { const plan = await call('list', input ?? {}); const url = URL.createObjectURL(new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'organizer-plan.json'; a.click(); URL.revokeObjectURL(url); } catch(e) { status.textContent = e.message; }
 });
+
+const categoryForm = document.createElement('form');
+categoryForm.innerHTML = `<h3>选择现有主分类</h3><label>现有分类根目录<input name="categoryRoot" required></label><button>为已确认名称推荐分类</button><p id="category-reason"></p><label>审核主分类<select name="category"></select></label><p id="category-path"></p><button type="button" id="confirm-category">保存冻结方案</button>`;
+section.append(categoryForm);
+let categoryInput;
+let categoryName = '';
+const categorySelect = categoryForm.querySelector('select');
+function previewCategory() { const root = categoryInput?.categoryRoot ?? ''; const name = categoryName; categoryForm.querySelector('#category-path').textContent = `最终路径：${root}/${categorySelect.value ? categorySelect.value + '/' : ''}${name}`; }
+categorySelect.addEventListener('change', previewCategory);
+categoryForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    categoryInput = { ...input, categoryRoot: new FormData(categoryForm).get('categoryRoot') };
+    const result = await call('classify', categoryInput);
+    const classification = result.classification; categoryName = result.confirmedName;
+    categorySelect.replaceChildren(...classification.options.map(value => { const option = document.createElement('option'); option.value = value; option.textContent = value || '分类根目录'; return option; }));
+    categorySelect.selectedIndex = classification.category === null ? -1 : classification.options.indexOf(classification.category);
+    categoryForm.querySelector('#category-reason').textContent = classification.reason;
+    categoryForm.querySelector('#category-path').textContent = classification.finalPath ?? '证据不足，请明确选择一个现有分类后审核。';
+  } catch(e) { status.textContent = e.message; }
+});
+categoryForm.querySelector('#confirm-category').addEventListener('click', async () => {
+  try { if (categorySelect.selectedIndex < 0) throw new Error('请明确选择主分类'); const result = await call('confirmCategory', { ...categoryInput, category: categorySelect.value }); categoryForm.querySelector('#category-path').textContent = result.frozenPlan.finalPath; status.textContent = '完整路径方案已冻结保存；Raw 未变化。'; } catch(e) { status.textContent = e.message; }
+});

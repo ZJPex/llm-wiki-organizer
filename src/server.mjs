@@ -23,7 +23,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
         return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
-      const planningAction = /^\/api\/planning\/(analyze|confirm|list)$/.exec(req.url)?.[1];
+      const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory)$/.exec(req.url)?.[1];
       if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !planningAction)) return send(404, { error: '入口不存在' });
       if (req.headers['x-organizer-token'] !== token || req.headers['content-type'] !== 'application/json') return send(403, { error: '会话校验失败，请刷新本地页面' });
       let body = '';

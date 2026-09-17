@@ -28,3 +28,13 @@ T1 的自动测试通过真实 HTTP 服务和临时文件系统验证页面资�
 状态默认写入用户目录 `.llm-wiki-organizer`，按规范化源根哈希分文件，禁止放入源目录内；测试注入临时状态目录。状态仅含分析与审核结果，不保存配置或凭据。已确认名字默认固定，重启后可复用；哈希变化须重新分析。进程内串行保存，MVP 不支持多个整理器进程共同写同一状态目录。
 
 配置读取用户指定的真实 `app-state.json`；按 `recentProjects/lastProject` 的路径找到项目 ID，再处理 `projectLlmOverrides`。启用项目覆盖时阻断 ingest 路由，否则使用 `taskModelRouting.ingestPresetId`，无选择时使用全局 `llmConfig`。上游核验依据为 `src/lib/llm-task-routing.ts`、`src/lib/project-store.ts`、`src/components/settings/preset-resolver.ts` 与 `llm-presets.ts`（本地 e808211 系列源码）。当前支持 `openai`、`deepseek`、`custom` 与登记的 `customLlmPresets` 的 Chat Completions 协议，未支持预设明确拒绝；不承诺 Anthropic、Gemini、Azure、CLI、Ollama 或全部内置预设兼容。自定义 HTTP 请求带 Wiki 保存的凭据与请求头，失败不输出响应正文或端点。
+
+## T10 现有分类规划
+
+命名确认后调用 `classify({ sourceRoot, identity, libraryPath, configPath, categoryRoot })`，复用 T9 全文综合分析。`categoryRoot` 是现有归档分类根目录；扫描只读目录树与可选 `.category.json`，格式为 `{ "description": "类别边界说明", "aliases": ["同义名"] }`。本任务不会创建目录或说明文件。检索先按全树名称与同义名分组选择候选，再仅将候选的说明交给模型；不读取其他 Raw 正文，也不重评已有文件归属。
+
+`classification` 包含 `category`（唯一相对目录或 null）、`reason/evidence/considered`、`options`、`catalogRoot/catalogHash`、`finalPath` 和 `status`。内容不确定或没有可靠候选时为 `needs-review` 且无自动选择，允许用户明确改选现有分类。章节及项目身份由已确认文件名保留，分类选择要求正文主题优先。
+
+`confirmCategory({ sourceRoot, identity, libraryPath, category })` 再次核验源哈希、分类树及说明哈希、真实目标存在性和同批计划重名，保存 `frozenPlan`：`schemaVersion/identity/sourcePath/sourceHash/name/category/categoryRoot/catalogHash/finalPath/planHash`。冻结只代表用户已审核这一方案，不构成迁移安全证明或执行授权。T12/T13 执行前必须重验源与分类基线、最终目标、备份和兼容证据；`planHash` 用 `planDigest` 对去除 `planHash` 字段后的固定计划对象计算。重新命名、重新分析或重新分类会使旧冻结方案失效。跨 sourceRoot 的批次合并后仍需统一检测目标重复。
+
+HTTP 新增 `/api/planning/classify` 和 `/api/planning/confirmCategory`，页面展示并可修改一个主分类、预览最终路径与下载完整已保存状态。没有目录演化或 Raw 写入。
