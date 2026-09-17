@@ -48,9 +48,11 @@ async function currentSources(batch) {
 export function createInboxStrategy({checkpoint=async()=>{}}={}) {
   return {
     async discover({input}) {
-      const raw=path.join(input.libraryPath,'raw/sources');
-      if(inside(input.sourceRoot,input.libraryPath)||(inside(input.libraryPath,input.sourceRoot)&&!inside(raw,input.sourceRoot)))fail('INVALID_INBOX','库内 Inbox 必须位于 raw/sources；外部 Inbox 必须与知识库独立');
-      const result=await discoverSources(input);return {...result,flow:{...result.flow,stage:'analysis',historyBeforeNew:true}};
+      // Windows 短路径与长路径可能指向同一目录，先拒绝连接再规范化边界。
+      const libraryPath=await safePath(input.libraryPath),sourceRoot=await safePath(input.sourceRoot);
+      const raw=path.join(libraryPath,'raw/sources');
+      if(inside(sourceRoot,libraryPath)||(inside(libraryPath,sourceRoot)&&!inside(raw,sourceRoot)))fail('INVALID_INBOX','库内 Inbox 必须位于 raw/sources；外部 Inbox 必须与知识库独立');
+      const result=await discoverSources({...input,libraryPath,sourceRoot});return {...result,flow:{...result.flow,stage:'analysis',historyBeforeNew:true}};
     },
     async analyze({batch,source,planning}) {
       if(source.ingestStatus==='uncertain')return {status:'blocked',selected:false};
