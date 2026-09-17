@@ -10,6 +10,8 @@
 - 确认并配置 needs-triage、needs-info、ready-for-agent、ready-for-human、wontfix。
 - 使用 AGENTS.md 作为 Matt Pocock 工程技能入口，GitHub Issue tracker 指向本仓库。
 - 从原工作区复制术语、需求与研究文档，原文件保留。
+- 完成 Spec #1 的 T1–T13（Issue #2–#14），包括首次重构、Inbox、完整备份、历史迁移、恢复演练与原库执行。
+- 完成规范／规格双轴审查，七项发现全部修复并复核；见 [最终审查记录](final-review.md)。
 
 ## 产品决策
 
@@ -21,7 +23,7 @@
 
 ## 后续工作
 
-按 [Spec #1](https://github.com/ZJPex/llm-wiki-organizer/issues/1) 的任务依赖图推进，统一交付到 [PR #15](https://github.com/ZJPex/llm-wiki-organizer/pull/15)。继续工作时先读实现记录，再读取当前任务的接口契约；所有任务完成并通过规范／规格双轴审查后，才能将草稿 PR 标为可审查。
+实现统一交付到 [PR #15](https://github.com/ZJPex/llm-wiki-organizer/pull/15)，未自动合并。继续工作时先读实现记录及对应接口契约。实际知识库迁移仍需要用户另行发起任务，并按运行说明完成暂停外部写入、预检和审核。
 
 ## 原始工作区
 
