@@ -44,12 +44,22 @@ import { rescanProjectFileSync, stopProjectFileSync } from '@/lib/project-file-s
 import { useWikiStore } from '@/stores/wiki-store';
 import { useFileSyncStore } from '@/stores/file-sync-store';
 let root: string;
+let external: any;
+const externalMode = Boolean(process.env.UPSTREAM_VALIDATION_COPY);
 let project: {id:string;name:string;path:string};
 const watch = {enabled:true,autoIngest:true,includeExtensions:['md']};
 beforeEach(async () => {
   guard.calls.length = 0; guard.scans.length = 0;
   vi.stubGlobal('fetch', () => forbidden('网络 fetch'));
   await stopProjectFileSync();
+  if (externalMode) {
+    const {validateExternalCopy} = await import('./external-copy.mjs');
+    external = await validateExternalCopy(process.env);
+    root = external.root;
+    project = {id:external.projectId,name:'外部隔离副本',path:root.replaceAll('\\','/')};
+    useWikiStore.setState({project,selectedFile:null});
+    return;
+  }
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'organizer-frontend-proof-'));
   project = {id:'isolated-frontend-proof', name:'隔离验证', path:root.replace(/\\/g,'/')};
   await fs.mkdir(path.join(root,'raw/sources'), {recursive:true});
@@ -61,9 +71,9 @@ beforeEach(async () => {
 afterEach(async () => {
   await stopProjectFileSync();
   vi.unstubAllGlobals();
-  await fs.rm(root, {recursive:true,force:true});
+  if (!externalMode) await fs.rm(root, {recursive:true,force:true});
 });
-describe('真实 Rust 重扫结果由固定上游前端消费', () => {
+describe.skipIf(externalMode)('真实 Rust 重扫结果由固定上游前端消费', () => {
   it('无变化副本：真实扫描无任务，前端没有请求任何危险入口', async () => {
     await rescanProjectFileSync(project, watch as any);
     expect(guard.scans).toHaveLength(1);
@@ -94,5 +104,21 @@ describe('真实 Rust 重扫结果由固定上游前端消费', () => {
     const native = await import('@tauri-apps/api/core');
     for (const call of [() => (llm.streamChat as any)(), () => (image.captionMarkdownImages as any)(), () => (vector.fetchEmbedding as any)(), () => fetch('https://invalid.example'), () => (http.fetch as any)(), () => native.invoke('llm')]) expect(call).toThrow();
     expect(guard.calls).toEqual(['生成模型','视觉模型','嵌入模型','网络 fetch','原生 HTTP','原生命令或 CLI 模型']);
+  });
+});
+
+describe.runIf(externalMode)('显式外部验证副本', () => {
+  it('真实重扫和前端消费不产生迁移副作用', async () => {
+    let error: string | null = null;
+    try { await rescanProjectFileSync(project, watch as any); }
+    catch (caught) { error = String(caught); }
+    const proof = {schemaVersion:1,projectId:project.id,validationPath:root,error,attempts:[...guard.calls],frontendSideEffects:[...guard.calls],rustProof:guard.scans[0] ?? null};
+    await fs.writeFile(external.resultFile,JSON.stringify(proof,null,2),{flag:'wx'});
+    expect(error).toBeNull();
+    expect(guard.scans).toHaveLength(1);
+    expect(proof.rustProof.result.changedTasks).toEqual([]);
+    expect(proof.rustProof.result.queue.tasks).toEqual([]);
+    expect(proof.attempts).toEqual([]);
+    expect(useFileSyncStore.getState().lastError).toBeNull();
   });
 });

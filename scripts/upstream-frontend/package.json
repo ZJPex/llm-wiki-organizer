@@ -1,0 +1,1 @@
+{"type":"module","private":true,"dependencies":{"vitest":"4.1.4","zustand":"5.0.12","react":"19.0.0","@tauri-apps/api":"2.11.0","@tauri-apps/plugin-http":"2.5.9"}}
