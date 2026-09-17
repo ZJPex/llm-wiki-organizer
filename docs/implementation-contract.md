@@ -38,3 +38,15 @@ T1 的自动测试通过真实 HTTP 服务和临时文件系统验证页面资�
 `confirmCategory({ sourceRoot, identity, libraryPath, category })` 再次核验源哈希、分类树及说明哈希、真实目标存在性和同批计划重名，保存 `frozenPlan`：`schemaVersion/identity/sourcePath/sourceHash/name/category/categoryRoot/catalogHash/finalPath/planHash`。冻结只代表用户已审核这一方案，不构成迁移安全证明或执行授权。T12/T13 执行前必须重验源与分类基线、最终目标、备份和兼容证据；`planHash` 用 `planDigest` 对去除 `planHash` 字段后的固定计划对象计算。重新命名、重新分析或重新分类会使旧冻结方案失效。跨 sourceRoot 的批次合并后仍需统一检测目标重复。
 
 HTTP 新增 `/api/planning/classify` 和 `/api/planning/confirmCategory`，页面展示并可修改一个主分类、预览最终路径与下载完整已保存状态。没有目录演化或 Raw 写入。
+
+## T11 局部分类演化
+
+`evolve({ sourceRoot, identity, libraryPath, configPath, categoryRoot, startCategory })` 从指定现有类别检查当前材料，复用全文分析。每次模型输入只有当前类别、直属类别及 T10 已检索到的相关分支，另提供当前目录文件名；不读取其他历史材料正文。响应 `canContain=true` 必须停止且无操作；只有 `parentAffected=true` 才逐级检查父节点。分类树全量目录/说明和文件哈希用于安全基线，不等于全库内容重新评估。
+
+操作类型：`add {parent,label,files}`、`split {from,groups:[{label,files}]}`、`merge {from,to}`、`move {from,parent,label?}`，每项必须包含 `problem/benefit`。没有收益的替代分法不得调整；深度不采用固定篇数阈值。新增/拆分文件名单必须来自真实基线，未分配的材料保持原位；合并/目录迁移会自动列出全部后代目录和文件，包括隐藏文件与附件。同义类别新建被拒绝，应改为复用或合并。
+
+独立 `src/evolution.js` 导出 `nextCategoryPath(paths,parent,label)`、`compileEvolution(catalog,baseline,operations,confirmedNames)` 和 `freezeEvolution`，供 T6 及批次复用。根级采用三位最小空号，子级在完整父编号后追加至少两位最小空号；移动后保留后代相对编号段并替换完整父前缀。缺失完整编号、同级编号冲突、重叠操作、覆盖目标或文件重名均阻塞，不猜测旧编号含义。
+
+`confirmEvolution({ sourceRoot, libraryPath, operations, previewOnly? })` 接受用户修改/排除后的操作，重查来源、分类目录/说明及文件基线；`previewOnly:true` 返回可审核映射但不保存冻结状态。正式确认保存 `evolution.frozenPlan`，含 `categoryRoot/catalogHash/baselineHash/operations/visited/directoryMappings/newDirectories/fileMappings/planHash`。`fileMappings` 每项为 `{from,to,hash,confirmedName}`，保留已确认名字；全部路径相对分类根。程序仅保存方案，不创建分类或移动 Raw；T6 执行仍需备份、验证副本及关联迁移。多条重叠目录操作需拆为独立批次审核。
+
+页面按中文字段展示分析摘要、原文证据、名称、分类理由和最终路径。演化支持调整类别名/父级/合并目标/问题/收益、排除整项建议、预览所有受影响路径并冻结。哈希和完整 JSON 只保留在可下载计划中。
