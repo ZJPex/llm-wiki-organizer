@@ -24,7 +24,7 @@ Windows 也可设置 `ORGANIZER_RESCAN_WSL_DISTRIBUTION=Ubuntu-24.04`，并将 `
 
 真实集成测试优先使用 `ORGANIZER_RESCAN_BINARY` 指定原生二进制，CI 构建完成后可设置该变量运行 `npm test`。本机也可在 PowerShell 设置 `ORGANIZER_TEST_WSL_RESCAN=1` 后 `node --test test/migration.test.js`，使用已安装隔离 WSL 验证器；`ORGANIZER_KEEP_PROOF=1` 会保留此测试创建的合成三份数据供联合前端检查。普通 `npm test` 对没有构建器的环境跳过这一外部集成测试，不能把跳过算作已验证。
 
-2026-09-17 已对实际执行单源迁移后的合成副本调用真实 Rust 重扫，前后均无 changedTasks／变更事件。该证据不等同于完整 Tauri 桌面启动，当时仅覆盖 T3 单源能力；链接与共享索引的后续验证分别见 T4/T5，批量执行尚未开放。原库执行始终禁用。
+2026-09-17 已对实际执行单源迁移后的合成副本调用真实 Rust 重扫，前后均无 changedTasks／变更事件。该证据不等同于完整 Tauri 桌面启动，当时仅覆盖 T3 单源能力；链接与共享索引的后续验证分别见 T4/T5，批量执行尚未开放。当时尚未开放原库执行；当前安全原库入口见 [原库执行合同](original-execution-contract.md)。
 
 同日另将上述已迁移副本交给 `scripts/upstream-frontend` 外部模式，执行真实 `rescanProjectFileSync` 事件消费者及生成／视觉／嵌入守卫：1/1 通过，`attempts=[]`、`frontendSideEffects=[]`、Rust `changedTasks=[]`，仅出现空队列更新事件。外部结果保存在测试临时目录 `organizer-migration-NibwJ9/external-proof.json`，没有访问真实用户知识库；可使用该脚本的外部副本模式重现。
 
