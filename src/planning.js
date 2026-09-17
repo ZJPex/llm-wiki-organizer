@@ -2,6 +2,7 @@ import { readFile, readdir, realpath, lstat, mkdir, writeFile, rename } from 'no
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
+import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
@@ -104,12 +105,42 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const collision = (await readdir(path.dirname(file))).some(p => p.toLowerCase() === name.toLowerCase() && p !== path.basename(file));
       const duplicate = Object.values(saved.data.entries).some(e => e.identity !== identity && path.dirname(e.identity) === path.dirname(identity) && e.confirmedName?.toLowerCase() === name.toLowerCase());
       if (collision || duplicate) throw new Error('目标名称已存在，不能覆盖');
-      entry.confirmedName = name; entry.reviewRequired = false;
+      if (entry.confirmedName !== name) { delete entry.classification; delete entry.frozenPlan; } entry.confirmedName = name; entry.reviewRequired = false;
+      await persist(saved.file, saved.data);
+      return entry;
+    }),
+    classify: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const file = await sourceFile(input.sourceRoot, input.identity);
+      const entry = saved.data.entries[input.identity];
+      if (!entry?.confirmedName || entry.reviewRequired) throw new Error('请先确认当前文件名');
+      if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('源文件变化，请重新分析');
+      await state(input.sourceRoot, input.categoryRoot);
+      const catalog = await categoryCatalog(input.categoryRoot);
+      const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
+      const recommendation = await recommendCategory({ entry, catalog, config, generate });
+      if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
+      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName) };
+      delete entry.frozenPlan;
+      await persist(saved.file, saved.data);
+      return entry;
+    }),
+    confirmCategory: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const file = await sourceFile(input.sourceRoot, input.identity);
+      const entry = saved.data.entries[input.identity];
+      if (!entry?.confirmedName || !entry.classification || entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('计划缺失或源基线变化');
+      const catalog = await categoryCatalog(entry.classification.catalogRoot);
+      if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
+      validateName(entry.confirmedName);
+      const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
+      if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
+      entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
       return entry;
     }),
     list: input => serial(async () => (await state(input.sourceRoot, input.libraryPath)).data),
   };
 }
-
-
