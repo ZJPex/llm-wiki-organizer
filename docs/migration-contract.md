@@ -25,3 +25,15 @@
 2026-09-17 已对实际执行单源迁移后的合成副本调用真实 Rust 重扫，前后均无 changedTasks／变更事件。该证据不等同于完整 Tauri 桌面启动，也不覆盖尚被拒绝的向量索引、复杂链接、共享产出与批量执行。原库执行始终禁用。
 
 同日另将上述已迁移副本交给 `scripts/upstream-frontend` 外部模式，执行真实 `rescanProjectFileSync` 事件消费者及生成／视觉／嵌入守卫：1/1 通过，`attempts=[]`、`frontendSideEffects=[]`、Rust `changedTasks=[]`，仅出现空队列更新事件。外部结果保存在测试临时目录 `organizer-migration-NibwJ9/external-proof.json`，没有访问真实用户知识库；可使用该脚本的外部副本模式重现。
+
+## T4 确定性链接修复
+
+默认 `analyzeLinks` 现为 `src/links.js`。支持 Obsidian 双链/嵌入、Markdown 内联链接与图片、引用式链接定义、相对路径和百分号编码；目标路径之外的别名、锚点、链接标题和正文保持原字节。Markdown 按引用文件所在目录解析，双链按明确库内路径或唯一后缀解析；不猜测同名文件。围栏代码、行内代码、转义起始括号及 HTML 注释不作为导航；受影响 HTML、缩进代码/嵌套列表歧义等未支持结构明确阻塞。外部 URL 与绝对代码路径原样保留，不进行全库修链。
+
+规划同时检查移动源的出链、未移动 Raw/Wiki 的反链、摘要引用，以及新路径引入的短双链歧义。每条原先唯一且有效的本地链接，在最终路径集合中必须仍唯一指向对应目标，否则计划失败。原有失效链接记录到 `links.preexistingBroken`，原有无关歧义记录到 `links.preexistingAmbiguous`；不把它们误报为迁移新增失效。锚点文本保留，当前证明的是文件目标等价，不单独重新解析全部标题或块锚点存在性。
+
+公开计划 `links.repairs[]` 包含 `{path,finalPath,kind,before,after,targetBefore,targetAfter}`，供审核逐条显示；`links.newlyBroken` 成功时为空。歧义错误包含 `path/candidates/affectedItemIds`，单源入口停止该依赖迁移，T6 可据依赖项排除后重新规划全批。`changes` 仍是旧项目相对路径到最终全文的 Map，修复与 sources 前言更新组合；不会重新生成知识正文。
+
+所有引用修复文件进入 `affectedPages` 并验证、更新 MD5 快照。Raw 正文因路径修复改变时，已有摄取项仅更新 SHA256，保留时间与成果关联；未摄取引用文件列入 `uncachedReferences`，不伪造缓存记录。现有受影响缓存或快照过期时拒绝迁移。公开审核方案列明所有受影响路径，执行仍仅作用于验证副本，原库/恢复备份哈希不变。
+
+验证：新增 HTTP 批次场景覆盖导航双链、同名歧义、相对图片、别名/锚点/标题、引用式链接、旧失效、未移动 Raw/Wiki、缺少摄取缓存的导航及 CRLF 保留。2026-09-17 显式 WSL 真实 Rust 重扫该链接迁移副本通过，迁移后 changedTasks 和模型尝试均为空；该证据不替代后续共享索引/批量支持验证。

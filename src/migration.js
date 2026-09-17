@@ -6,7 +6,8 @@ import { inventory } from './compatibility.js';
 import { safePath, verifyBackup } from './backup.js';
 import { sourceFrontmatter, summaryCandidates } from './source-format.js';
 import { modelGuard, nativeRescanVerifier, requireQuietRescan } from './migration-verifier.js';
-import { rejectComplexLinks, rejectSharedOutputs, rejectIndexes } from './migration-policy.js';
+import { analyzeLinks as repairLinks } from './links.js';
+import { rejectSharedOutputs, rejectIndexes } from './migration-policy.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const key = value => value.replaceAll('\\', '/').toLowerCase();
@@ -43,7 +44,7 @@ async function loadReport(reportPath) {
   return backup;
 }
 
-export function createMigrationService({ verify = nativeRescanVerifier(), checkpoint = async () => {}, analyzeLinks = rejectComplexLinks, analyzeShared = rejectSharedOutputs, analyzeIndex = rejectIndexes } = {}) {
+export function createMigrationService({ verify = nativeRescanVerifier(), checkpoint = async () => {}, analyzeLinks = repairLinks, analyzeShared = rejectSharedOutputs, analyzeIndex = rejectIndexes } = {}) {
   const plans = new Map();
   async function plan(input) {
     if (input.writersPaused !== true) fail('WRITERS_NOT_PAUSED', '请先暂停全部外部写入');
@@ -93,7 +94,16 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
         }
       }
     }
-    await analyzeLinks({ root, baseline, documents, moves, changes, affectedPages });
+    const links = await analyzeLinks({ root, baseline, documents, moves, changes, affectedPages });
+    const changedRaw = [...changes.keys()].filter(file => file.startsWith('raw/sources/') && /\.md$/i.test(file));
+    const uncachedReferences = [];
+    for (const file of changedRaw) {
+      const identity = file.slice('raw/sources/'.length);
+      const existing = cache.entries[identity];
+      if (!existing) { uncachedReferences.push(file); continue; }
+      if (existing.hash !== files.get(file).hash) fail('SOURCE_CHANGED', '引用文件的摄取缓存已过期，不能覆盖其内容变化');
+      existing.hash = createHash('sha256').update(changes.get(file)).digest('hex');
+    }
     if (outputs.some(file => !affectedPages.includes(file))) fail('MISSING_SOURCE_REFERENCE', '缓存产出缺少可唯一确定的 sources 引用');
     const knownState = new Set(['.llm-wiki/project.json', '.llm-wiki/ingest-cache.json', '.llm-wiki/file-snapshot.json', '.llm-wiki/ingest-queue.json', '.llm-wiki/file-change-queue.json']);
     for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !knownState.has(file.path))) {
@@ -125,8 +135,8 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       if (!record || record.hash !== md5(data) || record.size !== data.length) fail('STALE_SNAPSHOT', '受影响文件快照与内容不一致');
     }
     const id = randomUUID();
-    const result = { planId: id, status: 'awaiting-review', batchId: backup.batchId, validationPath: root, mapping: { oldPath, newPath }, summaryMapping: { oldPath: oldSummary, newPath: newSummary }, affectedPages,
-      operations: [...moves.map(move => ({ type: 'move', ...move })), ...[...changes.keys()].map(file => ({ type: 'metadata', path: file })), { type: 'snapshot', path: '.llm-wiki/file-snapshot.json' }], baselineHash: baseline.hash, originalExecutionAllowed: false };
+    const result = { planId: id, status: 'awaiting-review', batchId: backup.batchId, validationPath: root, mapping: { oldPath, newPath }, summaryMapping: { oldPath: oldSummary, newPath: newSummary }, affectedPages, links, uncachedReferences,
+      operations: [...moves.map(move => ({ type: 'move', ...move })), ...[...changes.keys()].map(file => ({ type: links?.repairs.some(repair => repair.path === file) ? 'links' : 'metadata', path: file })), { type: 'snapshot', path: '.llm-wiki/file-snapshot.json' }], baselineHash: baseline.hash, originalExecutionAllowed: false };
     plans.set(id, { result, backup, reportPath: input.reportPath, baseline, moves, changes, snapshot, used: false });
     return result;
   }

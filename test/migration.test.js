@@ -16,41 +16,8 @@ import { createApp } from '../src/server.mjs';
 const execute = promisify(execFile);
 const quiet = async () => ({ upstreamCommit: UPSTREAM_COMMIT, result: { changedTasks: [], queue: { version: 1, tasks: [] } }, events: [] });
 
-export async function migrationFixture(t, { oldIdentity = 'old.md', retained = false, decorate = async () => {} } = {}) {
-  const root = await mkdtemp(path.join(tmpdir(), 'organizer-migration-'));
-  if (!retained) t.after(() => rm(root, { recursive: true, force: true }));
-  const libraryPath = path.join(root, 'library');
-  const wikiSourcePath = path.join(root, 'upstream');
-  for (const dir of ['raw/sources', 'wiki/sources', '.llm-wiki']) await mkdir(path.join(libraryPath, dir), { recursive: true });
-  await mkdir(path.dirname(path.join(libraryPath, 'raw/sources', oldIdentity)), { recursive: true });
-  await mkdir(wikiSourcePath);
-  await writeFile(path.join(wikiSourcePath, 'package.json'), '{"name":"llm-wiki","version":"0.6.11"}');
-  await writeFile(path.join(wikiSourcePath, 'fixture'), 'verified-test-format');
-  const sourceManifest = { version: '0.6.11', commit: UPSTREAM_COMMIT, files: { fixture: digest('verified-test-format') } };
-  const inspect = input => preflight(input, { sourceManifest });
-  const write = async (file, data) => writeFile(path.join(libraryPath, file), typeof data === 'string' ? data : JSON.stringify(data));
-  const oldPath = `raw/sources/${oldIdentity}`;
-  const summary = `wiki/sources/${summaryCandidates(oldIdentity).at(-1)}.md`;
-  await write(oldPath, '# 已摄取的短源');
-  await write(summary, `---\nsources: ["${oldIdentity}"]\ntitle: 原摘要\n---\n保持摘要正文。`);
-  await write('wiki/concept.md', `---\nsources:\n  - "${oldIdentity}"\ntitle: 概念\n---\n保持知识正文。`);
-  await write('.llm-wiki/project.json', { id: 'original-uuid', createdAt: 1 });
-  await write('.llm-wiki/ingest-cache.json', { entries: { [oldIdentity]: { hash: digest('# 已摄取的短源'), timestamp: 123, filesWritten: [summary, 'wiki/concept.md'] } } });
-  await write('.llm-wiki/ingest-queue.json', [{ projectId: 'original-uuid', sourcePath: oldPath, status: 'failed' }, { projectId: 'original-uuid', sourcePath: 'raw/sources/unrelated.txt', status: 'cancelled' }]);
-  await write('.llm-wiki/file-change-queue.json', { version: 1, tasks: [] });
-  await decorate({ write, libraryPath, summary });
-  const files = {};
-  for (const file of [oldPath, summary, 'wiki/concept.md']) {
-    const data = await readFile(path.join(libraryPath, file)); const stat = await lstat(path.join(libraryPath, file));
-    files[file] = { hash: createHash('md5').update(data).digest('hex'), size: data.length, mtimeMs: Math.trunc(stat.mtimeMs) };
-  }
-  await write('.llm-wiki/file-snapshot.json', { version: 1, updatedAt: 1, files });
-  const backupInput = { libraryPath, wikiSourcePath, backupPath: path.join(root, 'backup'), validationPath: path.join(root, 'validation'), writersPaused: true };
-  const backup = await createBackup(backupInput, { inspect });
-  assert.equal(backup.status, 'complete', JSON.stringify(backup.errors));
-  const input = { reportPath: backup.reportPath, oldPath, newPath: 'raw/sources/主题/new.md', writersPaused: true };
-  return { root, backup, input, oldIdentity, summary };
-}
+export { migrationFixture } from './helpers/migration-fixture.js';
+import { migrationFixture } from './helpers/migration-fixture.js';
 
 test('HTTP 审核后仅迁移验证副本，同步 sources／摘要／缓存／快照，保留正文和无关任务', async t => {
   const f = await migrationFixture(t);
@@ -125,7 +92,7 @@ test('模型守卫分别记录生成、视觉与嵌入出口', async () => {
 
 test('链接、共享产出、向量索引和已有目标均明确拒绝', async t => {
   const cases = [
-    ['UNSUPPORTED_LINKS', async ({ write }) => write('wiki/concept.md', '---\nsources: ["old.md"]\nrelated: ["[[old]]"]\n---\n正文')],
+    ['UNSUPPORTED_LINKS', async ({ write }) => write('wiki/concept.md', '---\nsources: ["old.md"]\nrelated: <a href="old.md">link</a>\n---\n正文')],
     ['SHARED_OUTPUT', async ({ write, summary }) => write('.llm-wiki/ingest-cache.json', { entries: { 'old.md': { hash: digest('# 已摄取的短源'), timestamp: 1, filesWritten: [summary, 'wiki/concept.md'] }, 'other.md': { hash: digest('other'), timestamp: 1, filesWritten: ['wiki/concept.md'] } } })],
     ['UNSUPPORTED_INDEX', async ({ libraryPath }) => { await mkdir(path.join(libraryPath, '.llm-wiki/lancedb')); await writeFile(path.join(libraryPath, '.llm-wiki/lancedb/index'), 'binary'); }],
     ['TARGET_EXISTS', async ({ write }) => write('raw/sources/existing.md', '已有目标')],
