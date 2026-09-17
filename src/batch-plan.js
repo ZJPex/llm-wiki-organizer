@@ -7,6 +7,7 @@ import { canonicalPath } from './filesystem-paths.js';
 import { inventory } from './compatibility.js';
 import { sourceFrontmatter, summaryCandidates } from './source-format.js';
 import { indexPlanReport } from './indexes.js';
+import {dormantState,recordKind,relocateRecord} from './relocation-records.js';
 
 const key = value => value.replaceAll('\\', '/').toLowerCase();
 const fail = (code, message, details = {}) => { throw Object.assign(new Error(message), { code, ...details }); };
@@ -167,11 +168,23 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
       }
       const indexPlan = await adapters.analyzeIndex({ baseline, root, moves, changes });
       const known = new Set(['.llm-wiki/project.json', '.llm-wiki/ingest-cache.json', '.llm-wiki/file-snapshot.json', '.llm-wiki/ingest-queue.json', '.llm-wiki/file-change-queue.json', ...indexPlan.knownStatePaths]);
+      const recordMoves=[];
       for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !known.has(file.path))) {
-        const text = await readFile(path.join(root, file.path), 'utf8');
+        if(dormantState(file.path))continue;
+        const bytes=await readFile(path.join(root,file.path));
+        const record=recordKind(file.path)?await relocateRecord(file.path,bytes,{originalPath:root,validationPath:root,pathMoves:moveLookup}):null;
+        const text = record?record.scanBytes.toString('utf8'):bytes.toString('utf8');
         const affected = sourceItems.filter(item => [item.source.identity, item.source.summaryFrom, path.posix.basename(item.source.summaryFrom)].some(value => text.includes(value)));
         if (affected.length) fail('UNKNOWN_STATE_REFERENCE', '未知状态引用了受影响材料', { affectedItemIds: affected.map(item => item.id) });
+        if(record){
+          if(!record.bytes.equals(bytes))changes.set(file.path,record.bytes.toString('utf8'));
+          if(record.destinationFile!==file.path){const owner=moves.find(move=>move.from===record.sourceRelative);recordMoves.push({from:file.path,to:record.destinationFile,kind:'history',itemId:owner?.itemId});}
+        }
       }
+      for(const move of recordMoves){
+        if(recordMoves.some(other=>other!==move&&key(other.to)===key(move.to))||baseline.files.some(file=>key(file.path)===key(move.to)&&!recordMoves.some(other=>other.from===file.path))||backup.directories.some(dir=>key(dir)===key(move.to)))fail('TARGET_EXISTS','文件历史目标已被占用，保留原记录');
+      }
+      moves.push(...recordMoves);
       for (const [name, field] of [['ingest-queue.json', null], ['file-change-queue.json', 'tasks']]) {
         const value = await state(name), queue = field ? value[field] : value;
         if (!Array.isArray(queue) || queue.some(task => ['pending', 'processing'].includes(task.status))) fail('BUSY', '队列仍有待处理任务');

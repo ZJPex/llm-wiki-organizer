@@ -14,6 +14,7 @@ import {createMigrationService} from '../src/migration.js';
 import {createRecoveryService} from '../src/recovery.js';
 import {createOriginalExecutionService} from '../src/original-execution.js';
 import {UPSTREAM_COMMIT,nativeRescanVerifier} from '../src/migration-verifier.js';
+import {historyKey} from '../src/relocation-records.js';
 const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
 async function ready(t,options={}){
  const f=await migrationFixture(t,options),verify=options.verify??quiet;
@@ -33,6 +34,46 @@ test('原库执行复用冻结决策，保留身份且可重启查询',async t=>
  assert.deepEqual(result.modelAttempts,[]);
  assert.equal((await service.get({resultPath:result.resultPath})).status,'complete');
 });
+test('三类记录随冻结改名同步，历史查找键可用且正文保留，副本恢复和原库决策一致',async t=>{
+ let prose;
+ const oldRelative='raw/sources/old.md',newRelative='raw/sources/主题/new.md';
+ const historyFile=`.llm-wiki/history/${historyKey(oldRelative)}.json`,newHistoryFile=`.llm-wiki/history/${historyKey(newRelative)}.json`;
+ const verify=process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():quiet;
+ const f=await ready(t,{verify,decorate:async({libraryPath,write})=>{
+  await mkdir(path.join(libraryPath,'.llm-wiki/history'));await mkdir(path.join(libraryPath,'.llm-wiki/chats'));
+  const location=path.join(libraryPath,oldRelative);prose=`历史正文 old.md ${libraryPath} original-uuid`;
+  await write(historyFile,[{id:'v',path:location,timestamp:1,author:'human',tool:'ui.write_file',content:prose}]);
+  await write('.llm-wiki/chats/conv_test.json',[{id:'m',role:'assistant',timestamp:1,conversationId:'conv_test',content:prose,contextFiles:[location],references:[{title:'来源',path:location}]}]);
+  await write('.llm-wiki/review.json',[{id:'r',title:'审核',description:prose,sourcePath:location,affectedPages:['./'+oldRelative],options:[],resolved:false,createdAt:1}]);
+  await write('.llm-wiki/.file-change-queue.json.1785725868891120000.tmp',{tasks:[{projectId:'original-uuid',sourcePath:oldRelative,status:'pending'}]});
+ }});
+ const service=createOriginalExecutionService({verify}),plan=await service.prepare(f.input);
+ const result=await service.execute({authorizationPlanPath:plan.authorizationPlanPath,approved:true,writersPaused:true});
+ assert.equal(result.status,'complete',JSON.stringify(result.error));
+ for(const root of [f.backup.originalPath,f.backup.validationPath]){
+  const load=async file=>JSON.parse(await readFile(path.join(root,file),'utf8'));
+  const history=(await load(newHistoryFile))[0];assert.equal(history.path,path.join(root,newRelative).replaceAll('\\','/'));assert.equal(history.content,prose);
+  await assert.rejects(readFile(path.join(root,historyFile)),{code:'ENOENT'});
+  const chat=(await load('.llm-wiki/chats/conv_test.json'))[0];assert.equal(chat.content,prose);assert.equal(chat.contextFiles[0],history.path);
+  const review=(await load('.llm-wiki/review.json'))[0];assert.equal(review.sourcePath,history.path);assert.equal(review.description,prose);assert.equal(review.affectedPages[0],newRelative);
+ }
+ assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
+});
+
+test('历史查找键不匹配或目标键被占用时拒绝改名，所有文件保持基线',async t=>{
+ for(const kind of ['mismatch','collision'])await t.test(kind,async t=>{
+  const f=await migrationFixture(t,{decorate:async({libraryPath,write})=>{
+   await mkdir(path.join(libraryPath,'.llm-wiki/history'));
+   const entry={id:'v',path:path.join(libraryPath,'raw/sources/old.md'),timestamp:1,author:'human',tool:'ui.write_file',content:'原文'};
+   await write(`.llm-wiki/history/${kind==='mismatch'?'0123456789abcdef':historyKey('raw/sources/old.md')}.json`,[entry]);
+   if(kind==='collision')await write(`.llm-wiki/history/${historyKey('raw/sources/主题/new.md')}.json`,[{...entry,id:'other',path:path.join(libraryPath,'raw/sources/主题/new.md')}]);
+  }});
+  const before=await inventory(f.backup.validationPath);
+  await assert.rejects(createMigrationService({verify:quiet}).plan(f.input),{code:kind==='mismatch'?'UNKNOWN_RELOCATION':'TARGET_EXISTS'});
+  assert.deepEqual(await inventory(f.backup.validationPath),before);
+ });
+});
+
 test('任何原库新增文件或空目录、验证后改动和损坏证据均阻止执行',async t=>{
  for(const kind of ['file','directory','validation','report'])await t.test(kind,async t=>{
   const f=await ready(t),service=createOriginalExecutionService({verify:quiet}),plan=await service.prepare(f.input);

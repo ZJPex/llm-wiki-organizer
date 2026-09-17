@@ -58,6 +58,8 @@ Windows 也可设置 `ORGANIZER_RESCAN_WSL_DISTRIBUTION=Ubuntu-24.04`，并将 `
 普通运行使用固定重扫响应，仅验证模块协作。设置 `ORGANIZER_TEST_WSL_RESCAN=1` 或 `ORGANIZER_RESCAN_BINARY` 时改为真实重扫；`ORGANIZER_KEEP_PROOF=1` 保留合成三份数据。2026-09-17，真实 WSL Rust 测试 1/1 通过，同一迁移后副本交给固定上游前端外部模式 1/1 通过，`attempts=[]`、`frontendSideEffects=[]`、`changedTasks=[]`、`error=null`。证据为临时目录 `organizer-combined-gaSJFC/external-proof.json`，不包含真实用户资料。
 ## T6 批量冻结、依赖与执行
 
+已适配的聊天引用、审核来源和文件历史字段使用同一冻结映射更新，正文与说明文字保留。文件历史按固定上游 FNV-1a 算法将原相对路径查找键迁到新键；键与来源不匹配、同一历史文件混合来源或目标被无关文件占用时拒绝。历史文件通过既有 staging 支持交换，不覆盖占位。已知原子写入临时队列／快照仅保留，不当作活动任务或受影响引用。逻辑计划将已识别的绝对记录路径归一化为 `@library/`，以验证副本和原库复用同一决策。
+
 `createMigrationService().buildPlan(input)`／`plan(input)` 保留单源 `oldPath/newPath`，新增 `mappings:[{id?,from,to,enabled?}]`、`exclusions:[id]` 与 `evolutionPlan`。分类演化计划重新校验目录清单、文件基线和计划哈希，再复用 `compileEvolution` 的最小空号及完整后代前缀；修改目标不能改变已确认文件名。页面 `/batch-migration` 提供导入、逐项修改、排除、重新冻结和副本执行入口。空目录本身不作为独立批次项目；仅创建选中材料所需目录，源目录仅在实际为空时移除。
 
 一次编译所有选中映射：共享 sources、全缓存 filesWritten、队列、反链及索引使用同一冻结映射，避免 A→B→C 连续替换。源/摘要目标占位建立依赖；排除占位者会阻塞依赖者，确定到项目的歧义可阻塞该项后重新编译安全子集，无法定位的未知状态阻塞所有剩余项。公开 `items` 含 selected/excluded/blocked 及原因，`dependencies` 保留依赖关系。交换和仅大小写改名使用副本外独占 staging，索引先切换到独占临时标识再落最终标识，不覆盖现存数据。T5 的未知格式、revision、已有向量片段正文变更限制继续生效。

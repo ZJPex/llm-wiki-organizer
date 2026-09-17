@@ -11,6 +11,7 @@ import { analyzeIndexes, executeIndexMigration } from './indexes.js';
 import { compileBatchPlan } from './batch-plan.js';
 import { planDigest } from './categories.js';
 import { canonicalPath } from './filesystem-paths.js';
+import {recordKind,relocateRecord} from './relocation-records.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const key = value => value.replaceAll('\\', '/').toLowerCase();
@@ -49,7 +50,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     const baseline = await inventory(backup.validationPath);
     const compiled = await compileBatchPlan(input, backup, baseline, { analyzeLinks, analyzeShared, analyzeIndex });
     const id = restored?.planId ?? randomUUID();
-    const { logicalPlan, directoryMappings, newDirectories } = describeLogicalPlan(compiled, backup);
+    const { logicalPlan, directoryMappings, newDirectories } = await describeLogicalPlan(compiled, backup);
     const logicalPlanHash = planDigest(logicalPlan);
     if (restored && (restored.logicalPlanHash !== logicalPlanHash || restored.baselineHash !== baseline.hash)) fail('STALE_PLAN', '持久化计划与当前确定性结果不一致');
     const planManifestPath = `${backup.validationPath}.plan-${id}.json`;
@@ -97,11 +98,15 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
   return { plan, execute, buildPlan: plan, executeValidation: execute };
 }
 
-export function describeLogicalPlan(compiled, backup) {
+export async function describeLogicalPlan(compiled, backup) {
     const directoryMappings = (compiled.evolution?.directoryMappings ?? []).filter(directory => compiled.moves?.some(move => move.from.startsWith(`${directory.from}/`)));
     const newDirectories = (compiled.evolution?.newDirectories ?? []).filter(directory => compiled.moves?.some(move => move.to.startsWith(`${directory}/`)));
 
-    const logicalChanges = [...(compiled.changes ?? new Map())].map(([file, text]) => {
+    const logicalChanges = await Promise.all([...(compiled.changes ?? new Map())].map(async ([file, text]) => {
+      if(recordKind(file)){
+        const record=await relocateRecord(file,Buffer.from(text),{originalPath:backup.validationPath,validationPath:'@library'});
+        return {path:file,content:record.bytes.toString('utf8')};
+      }
       if (file === '.llm-wiki/ingest-cache.json') {
         const data = JSON.parse(text);
         for (const entry of Object.values(data.entries)) entry.filesWritten = entry.filesWritten.map(value => path.isAbsolute(value) || path.win32.isAbsolute(value) ? `@library/${relativeOutput(backup.validationPath, value)}` : value);
@@ -113,7 +118,7 @@ export function describeLogicalPlan(compiled, backup) {
         return { path: file, content: JSON.stringify(data) };
       }
       return { path: file, content: text };
-    });
+    }));
     const logicalPlan = { schemaVersion: 1, items: compiled.items, dependencies: compiled.dependencies, moves: compiled.moves ?? [], selectedSources: compiled.selectedSources,
       directories: { mappings: directoryMappings, create: newDirectories },
       changes: logicalChanges, links: compiled.links ?? null, indexes: compiled.indexes ?? null };

@@ -2,7 +2,7 @@ import {listenForBrowser} from './helpers/http-server.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {readFile,writeFile,lstat} from 'node:fs/promises';
+import {readFile,writeFile,lstat,mkdir} from 'node:fs/promises';
 import {migrationFixture} from './helpers/migration-fixture.js';
 import {createMigrationService} from '../src/migration.js';
 import {createRecoveryService} from '../src/recovery.js';
@@ -18,8 +18,8 @@ import {createApp} from '../src/server.mjs';
 import {validateExternalCopy} from '../scripts/upstream-frontend/external-copy.mjs';
 const exec=promisify(execFile);
 const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
-async function failedFixture(t){
- const f=await migrationFixture(t);const migration=createMigrationService({verify:quiet,checkpoint:async stage=>{if(stage==='move')throw new Error('故障后保留');}});
+async function failedFixture(t,options){
+ const f=await migrationFixture(t,options);const migration=createMigrationService({verify:quiet,checkpoint:async stage=>{if(stage==='move')throw new Error('故障后保留');}});
  const plan=await migration.plan(f.input);const failed=await migration.execute({planId:plan.planId,approved:true,writersPaused:true});assert.equal(failed.status,'failed');
  await writeFile(path.join(f.backup.validationPath,'raw/sources/新增.md'),'迁移后新材料');
  await writeFile(path.join(f.backup.validationPath,'wiki/concept.md'),'迁移后用户新修改');
@@ -88,6 +88,29 @@ test('final-bind 写后进程退出：续作只接受已记录状态，不覆盖
   const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(`${base}/api/session`)).json();
   const response=await fetch(`${base}/api/recovery/execute`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({recoveryPlanPath:plan.recoveryPlanPath,approved:true,writersPaused:true})});const result=await response.json();assert.equal(result.restoreBinding,undefined);assert.equal(result.finalBinding,undefined);
   if(changed){assert.equal(result.status,'failed');assert.equal(result.error.code,'RECOVERY_BIND_CONFLICT');assert.equal(await readFile(path.join(plan.destination,'.llm-wiki',changed),'utf8'),expected);}else assert.equal(result.status,'complete',JSON.stringify(result.error));
+  assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
+ });
+});
+
+test('历史记录参与原位及换目录绑定，进程中断后的用户记录修改不能覆盖',async t=>{
+ for(const mode of ['same-location','new-directory'])for(const changed of [null,'review.json','chats/conv_test.json','history/0123456789abcdef.json'])await t.test(`${mode} ${changed??'正常恢复'}`,async t=>{
+  let prose;
+  const f=await failedFixture(t,{decorate:async({libraryPath,write})=>{
+   for(const dir of ['history','chats'])await mkdir(path.join(libraryPath,'.llm-wiki',dir));
+   await write('wiki/untouched.md','不受改名影响的历史材料');const location=path.join(libraryPath,'wiki/untouched.md');prose=`旧原文 ${libraryPath}`;
+   await write('.llm-wiki/history/0123456789abcdef.json',[{id:'v',path:location,timestamp:1,author:'human',tool:'ui.write_file',content:prose}]);
+   await write('.llm-wiki/chats/conv_test.json',[{id:'m',role:'user',timestamp:1,conversationId:'conv_test',content:prose,contextFiles:[location]}]);
+   await write('.llm-wiki/review.json',[{id:'r',title:'审核',description:prose,sourcePath:location,options:[],resolved:false,createdAt:1}]);
+  }});
+  const verify=process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():quiet,service=createRecoveryService({verify});
+  const plan=await service.plan({journalPath:f.failed.journalPath,mode,...(mode==='new-directory'?{destination:path.join(f.root,'recovered')}:{}),writersPaused:true});
+  const code=`import {createRecoveryService} from ${JSON.stringify(new URL('../src/recovery.js',import.meta.url).href)};import {nativeRescanVerifier} from ${JSON.stringify(new URL('../src/migration-verifier.js',import.meta.url).href)};const service=createRecoveryService({verify:process.env.ORGANIZER_RESCAN_BINARY?nativeRescanVerifier():${quiet.toString().replace('UPSTREAM_COMMIT',JSON.stringify(UPSTREAM_COMMIT))},checkpoint:async stage=>{if(stage==='final-bind')process.exit(79)}});await service.execute({recoveryPlanPath:process.argv[1],approved:true,writersPaused:true});`;
+  await assert.rejects(exec(process.execPath,['--input-type=module','-e',code,plan.recoveryPlanPath]),error=>error.code===79);
+  let preserved;
+  if(changed){const file=path.join(plan.destination,'.llm-wiki',changed),value=JSON.parse(await readFile(file,'utf8'));value[0].userNote='中断后修改';preserved=JSON.stringify(value);await writeFile(file,preserved);}
+  const result=await createRecoveryService({verify}).execute({recoveryPlanPath:plan.recoveryPlanPath,approved:true,writersPaused:true});
+  if(changed){assert.equal(result.error.code,'RECOVERY_BIND_CONFLICT');assert.equal(await readFile(path.join(plan.destination,'.llm-wiki',changed),'utf8'),preserved);}
+  else {assert.equal(result.status,'complete',JSON.stringify(result.error));const entry=JSON.parse(await readFile(path.join(plan.destination,'.llm-wiki/history/0123456789abcdef.json'),'utf8'))[0];assert.equal(entry.path,path.join(plan.destination,'wiki/untouched.md').replaceAll('\\','/'));assert.equal(entry.content,prose);}
   assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
  });
 });

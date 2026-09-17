@@ -7,6 +7,9 @@
     "src/lib/source-identity.ts": "dc17c6ce3a06c97bf757fe4c60ce9d0371529474f73791737c2cfb96f1510357",
     "src-tauri/src/commands/file_sync.rs": "0e3f24f3dd9d9bf84411809b712d02a81204012ddec13ecbc8f86662af1eb117",
     "src-tauri/src/commands/vectorstore.rs": "8476dd490a1d5af76706e172e7605d7d67abdd3ff0be74297984ee769e132ffd",
-    "src-tauri/src/commands/page_embedding.rs": "2292720419f6ed04f0e5f73f36200c83019ddf80cab1657097e254274ce06924"
+    "src-tauri/src/commands/page_embedding.rs": "2292720419f6ed04f0e5f73f36200c83019ddf80cab1657097e254274ce06924",
+    "src-tauri/src/commands/file_history.rs": "b1bf192d46bb4f645576ba4e39fb0a9782a197ec16f037ae372648174a4b7352",
+    "src/stores/chat-store.ts": "ada6e4bb777a0b1370c2d56c41d10d094c0e05baa4225a87daac6d3a5225543e",
+    "src/stores/review-store.ts": "8220f0a0b83d33b7cc56d6f1afbed6e018334db16f942786fcf6310b89ed9d99"
   }
 }

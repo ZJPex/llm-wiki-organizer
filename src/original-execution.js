@@ -68,7 +68,7 @@ export function createOriginalExecutionService({ verify = nativeRescanVerifier()
     const physical = { ...backup, validationPath: backup.originalPath, relocation: { ...backup.relocation, validationProjectId: backup.relocation.originalProjectId } };
     const baseline = await inventory(backup.originalPath);
     const compiled = await compileBatchPlan(manifest.request,physical,baseline,{ analyzeLinks,analyzeShared:analyzeSharedOutputs,analyzeIndex:analyzeIndexes });
-    const description = describeLogicalPlan(compiled,physical);
+    const description = await describeLogicalPlan(compiled,physical);
     if (planDigest(description.logicalPlan) !== manifest.logicalPlanHash) fail('PLAN_MISMATCH', '原库确定性方案与已验证冻结决策不同');
     await verifyBackup(backup.originalPath,backup.baseline,backup.directories);
     return { ...proof, physical, baseline, compiled, description };

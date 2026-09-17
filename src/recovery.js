@@ -8,6 +8,7 @@ import {modelGuard,nativeRescanVerifier,requireQuietRescan} from './migration-ve
 import {analyzeIndexes,verifyIndexContents} from './indexes.js';
 import {analyzeLinks} from './links.js';
 import {sourceFrontmatter} from './source-format.js';
+import {recordKind} from './relocation-records.js';
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
@@ -43,12 +44,19 @@ async function copyResumable(source,destination,baseline,directories){
  if(existing.files.some(f=>expected.get(f.path)!==f.hash))fail('RECOVERY_COPY_CONFLICT','恢复工作目录包含未知或不同内容，保留现场并停止');
  await copyTree(source,destination,baseline,directories,async(from,to,flags)=>{if(!await exists(to))await copyFile(from,to,flags);else if(await digestFile(from)!==await digestFile(to))fail('RECOVERY_COPY_CONFLICT','复制恢复内容冲突');});
 }
-async function captureState(root){return Object.fromEntries(await Promise.all(stateFiles.map(async file=>[file,(await readFile(path.join(root,'.llm-wiki',file))).toString('base64')])));}
+async function captureState(root){
+ const baseline=await inventory(root);
+ const files=[...stateFiles,...baseline.files.filter(file=>recordKind(file.path)).map(file=>file.path.slice('.llm-wiki/'.length))];
+ return Object.fromEntries(await Promise.all(files.map(async file=>[file,(await readFile(path.join(root,'.llm-wiki',file))).toString('base64')])));
+}
 async function applyBinding(root,binding){
  const current=await captureState(root);
+ const files=Object.keys(current).sort();
+ if(JSON.stringify(files)!==JSON.stringify(Object.keys(binding.before).sort())||JSON.stringify(files)!==JSON.stringify(Object.keys(binding.after).sort()))fail('RECOVERY_BIND_CONFLICT','恢复绑定文件集合发生变化，保留现场');
+ for(const file of files){const stat=await lstat(path.join(root,'.llm-wiki',file));if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)fail('RECOVERY_BIND_CONFLICT','恢复绑定文件出现链接或共享内容，保留现场');}
  // 先核验所有文件，再写入；只允许日志记录的前态、后态或两者组成的中断状态。
- for(const file of stateFiles)if(current[file]!==binding.before[file]&&current[file]!==binding.after[file])fail('RECOVERY_BIND_CONFLICT','恢复绑定状态出现用户修改或未知内容，保留全部现场并停止');
- for(const file of stateFiles)if(current[file]!==binding.after[file])await writeFile(path.join(root,'.llm-wiki',file),Buffer.from(binding.after[file],'base64'));
+ for(const file of files)if(current[file]!==binding.before[file]&&current[file]!==binding.after[file])fail('RECOVERY_BIND_CONFLICT','恢复绑定状态出现用户修改或未知内容，保留全部现场并停止');
+ for(const file of files)if(current[file]!==binding.after[file])await writeFile(path.join(root,'.llm-wiki',file),Buffer.from(binding.after[file],'base64'));
 }
 async function validateLibrary(root,projectId,expectedIndexes,verify,models){
  const baseline=await inventory(root),files=new Map(baseline.files.map(f=>[f.path,f]));

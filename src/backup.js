@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inventory, preflight } from './compatibility.js';
 import { canonicalPath } from './filesystem-paths.js';
+import {dormantState,recordKind,relocateRecord} from './relocation-records.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const normalize = value => value.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
@@ -114,22 +115,36 @@ export async function relocateValidationCopy(validationPath, originalPath, { ori
     }
   }
   const first = await inventory(validationPath);
+  const records = new Map();
+  for (const file of first.files) {
+    if (!recordKind(file.path)) continue;
+    const record = await relocateRecord(file.path, await readFile(path.join(validationPath,file.path)), {originalPath,originalAliases,validationPath});
+    if (record) records.set(file.path,record);
+  }
+  // 固定上游 file_sync.rs 的原子写入残留不是运行时输入：只读取两个固定正式文件。
+  // 原库、备份及副本均保留原字节，不恢复其中旧任务；不能扩大为忽略任意 .tmp 文件。
+  const preservedTemporaryFiles = first.files.filter(file => dormantState(file.path)).map(file => file.path);
+  const dormantFiles = new Set(preservedTemporaryFiles);
   const oldPaths = [originalPath, ...originalAliases].flatMap(root => [root, root.replaceAll('\\', '/'), root.replaceAll('/', '\\')]).flatMap(value => [value, JSON.stringify(value).slice(1, -1)]);
   for (const file of first.files) {
+    if (dormantFiles.has(file.path)) continue;
     const transformed = data.has(file.path) ? JSON.stringify(data.get(file.path), null, 2) : null;
-    const bytes = transformed === null ? await readFile(path.join(validationPath, file.path)) : Buffer.from(transformed);
+    const bytes = records.get(file.path)?.scanBytes ?? (transformed === null ? await readFile(path.join(validationPath, file.path)) : Buffer.from(transformed));
     const texts = [bytes.toString('utf8'), bytes.toString('utf16le')];
     if (texts.some(text => oldPaths.filter(root => normalize(root) !== normalize(validationPath)).some(root => text.toLowerCase().includes(root.toLowerCase())) || (newId !== oldId && text.includes(oldId)))) {
       fail('UNKNOWN_RELOCATION', `发现未适配的原库路径或身份引用：${file.path}`);
     }
   }
-  if (prepareOnly) return { stateContents: Object.fromEntries([...data].map(([file,value])=>[path.posix.basename(file),Buffer.from(JSON.stringify(value,null,2)).toString('base64')])) };
+  const stateContents = Object.fromEntries([...data].map(([file,value])=>[file.slice('.llm-wiki/'.length),Buffer.from(JSON.stringify(value,null,2)).toString('base64')]));
+  for (const [file,record] of records) stateContents[file.slice('.llm-wiki/'.length)] = record.bytes.toString('base64');
+  if (prepareOnly) return { stateContents };
   for (const [file, value] of data) {
     await writeFile(path.join(validationPath, file), JSON.stringify(value, null, 2));
     changes.push(file);
   }
+  for (const [file,record] of records) {await writeFile(path.join(validationPath,file),record.bytes);changes.push(file);}
   return { originalProjectId: oldId, validationProjectId: newId, changedFiles: changes,
-    runtimeValidated: false, requiresIsolatedRuntime: true };
+    preservedTemporaryFiles, preservedHistoricalText:true, runtimeValidated: false, requiresIsolatedRuntime: true };
 }
 
 /** 完整离线备份；注入点仅供程序测试，不能由 HTTP JSON 提供。 */

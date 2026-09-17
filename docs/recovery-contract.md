@@ -10,7 +10,7 @@
 
 计划保存在 `${targetRoot}.recovery-${recoveryId}.json`，结果为同名 `.result.json`。计划包含 `sourceJournalPath/sourceJournalHash`、`planManifestPath/planManifestHash`、`logicalPlanHash`、`backupReportPath/backupManifestHash`、`batchId`、`targetRole/targetRoot`、`beforeBaseline/beforeDirectories`、`scenePath/destination/stagingPath` 和审核后的身份。`recoveryPlanHash` 与 `reportHash` 都是删除自身哈希字段后对 `JSON.stringify(record)` 的 SHA-256；读取前验证。
 
-每步先持久化 `phase` 再操作，完成后持久化 `completed`。复制允许重用严格匹配的文件子集；换位通过源、现场、暂存位置与完整哈希辨别已完成操作。冲突停止且保留全部目录。测试实际子进程在 `park` 完成但完成记录未写入时退出，再由新服务续作成功。结构化身份绑定在任何写入前持久化 project、cache、ingest queue、change queue 四文件的精确前态与目标后态。续作先核对所有文件各自只处于这两个状态之一，再补全未写入后态；未知用户修改报 `RECOVERY_BIND_CONFLICT`，全部现场和完整备份保持原样。无后态证据的旧中断日志保守停止，不盲目恢复前像。HTTP 报告剔除绑定字节，磁盘完整报告保留审计证据。测试通过真实子进程在 final-bind 写后退出，再经 HTTP 续作，覆盖无修改成功及 project/cache 用户修改保留。
+每步先持久化 `phase` 再操作，完成后持久化 `completed`。复制允许重用严格匹配的文件子集；换位通过源、现场、暂存位置与完整哈希辨别已完成操作。冲突停止且保留全部目录。测试实际子进程在 `park` 完成但完成记录未写入时退出，再由新服务续作成功。结构化身份绑定在任何写入前持久化 project、cache、ingest queue、change queue 以及已适配聊天／文件历史／审核记录的精确前态与目标后态。续作先核对文件集合没有增删、文件不共享硬链接，再核对所有文件各自只处于这两个状态之一，再补全未写入后态；未知用户修改报 `RECOVERY_BIND_CONFLICT`，全部现场和完整备份保持原样。无后态证据的旧中断日志保守停止，不盲目恢复前像。HTTP 报告剔除绑定字节，磁盘完整报告保留审计证据。测试通过真实子进程在 final-bind 写后退出，再经 HTTP 续作，覆盖无修改成功及 project/cache 用户修改保留。
 
 成功结果包含 `restoreRoot/projectId`、`afterBaseline`、`verification.sources/links/indexes/proof`、`modelAttempts` 和 `backupUnchanged`。验证核对所有来源缓存 SHA-256、产出位置、Wiki 来源身份、链接与真实 LanceDB v1/v2 全行浮点位模式，并重连进行向量搜索。真实 Rust 重扫要求零任务、零模型尝试；扫描后恢复 snapshot/queue 原字节，避免改变证据基线。
 
