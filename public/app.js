@@ -25,3 +25,5 @@ document.querySelector('#download').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
   const a = document.createElement('a'); a.href = url; a.download = 'organizer-preflight.json'; a.click(); URL.revokeObjectURL(url);
 });
+
+import '/planning-ui.js';

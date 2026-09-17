@@ -18,3 +18,13 @@
 - `batches` 管理范围、审核、冻结、备份、验证及执行状态；通过以上模块协作。新增入口可扩展 `createApp`，避免绕开现有 HTTP 安全校验。
 
 T1 的自动测试通过真实 HTTP 服务和临时文件系统验证页面资源及入口行为；尚未执行浏览器自动点击、Wiki 重启或模型兼容验证。预检不会调用任何模型，也不会读出配置正文到报告。
+
+## T9 内容命名接口
+
+`createPlanningService({ generate, stateDirectory })` 导出 `analyze({ sourceRoot, identity, libraryPath, configPath })`、`confirm({ sourceRoot, identity, name, allowRenameConfirmed? })`、`list({ sourceRoot })`。`identity` 为源目录内 `/` 分隔 Markdown 相对路径；HTTP 使用 `/api/planning/analyze|confirm|list` 并沿用会话校验。后续分类器可复用条目的 `hash/kind/segments/analysis/identityHints/confirmedName`，执行器须再次校验源哈希及最终目标目录冲突，规划不执行搬动。
+
+分析覆盖全部降权视图，按模型上下文限制分段并分层综合；原文及元数据不写回。`kind` 为 `body/navigation/title-only/blank/noise`，后三类不调用模型；不确定结果无自动命名建议。分段响应证据必须为该段的原文子串。系列号提示来自首个标题和原名，若模型遗漏则交人工。语义是否忠于全文仍须代表材料人工审核。
+
+状态默认写入用户目录 `.llm-wiki-organizer`，按规范化源根哈希分文件，禁止放入源目录内；测试注入临时状态目录。状态仅含分析与审核结果，不保存配置或凭据。已确认名字默认固定，重启后可复用；哈希变化须重新分析。进程内串行保存，MVP 不支持多个整理器进程共同写同一状态目录。
+
+配置读取用户指定的真实 `app-state.json`；按 `recentProjects/lastProject` 的路径找到项目 ID，再处理 `projectLlmOverrides`。启用项目覆盖时阻断 ingest 路由，否则使用 `taskModelRouting.ingestPresetId`，无选择时使用全局 `llmConfig`。上游核验依据为 `src/lib/llm-task-routing.ts`、`src/lib/project-store.ts`、`src/components/settings/preset-resolver.ts` 与 `llm-presets.ts`（本地 e808211 系列源码）。当前支持 `openai`、`deepseek`、`custom` 与登记的 `customLlmPresets` 的 Chat Completions 协议，未支持预设明确拒绝；不承诺 Anthropic、Gemini、Azure、CLI、Ollama 或全部内置预设兼容。自定义 HTTP 请求带 Wiki 保存的凭据与请求头，失败不输出响应正文或端点。
