@@ -116,7 +116,7 @@ describe.runIf(externalMode)('显式外部验证副本', () => {
     catch (caught) { error = String(caught); }
     finally {for(const file of preserved)await fs.writeFile(file.file,file.bytes);}
     const stateHashes=await Promise.all(preserved.map(async file=>({path:file.name,before:createHash('sha256').update(file.bytes).digest('hex'),after:createHash('sha256').update(await fs.readFile(file.file)).digest('hex')})));
-    const proof = {schemaVersion:1,projectId:project.id,validationPath:root,error,attempts:[...guard.calls],frontendSideEffects:[...guard.calls],rustProof:guard.scans[0] ?? null,stateHashes,recoveryReportHash:external.recoveryReportHash??null};
+    const proof = {schemaVersion:1,projectId:project.id,validationPath:root,error,attempts:[...guard.calls],frontendSideEffects:[...guard.calls],rustProof:guard.scans[0] ?? null,stateHashes,recoveryReportHash:external.recoveryReportHash??null,targetRole:external.targetRole??'validation',originalResultHash:external.originalResultHash??null,authorizationHash:external.authorizationHash??null,logicalPlanHash:external.logicalPlanHash??null};
     await fs.writeFile(external.resultFile,JSON.stringify(proof,null,2),{flag:'wx'});
     expect(error).toBeNull();
     expect(guard.scans).toHaveLength(1);
