@@ -2,10 +2,12 @@ import path from 'node:path';
 import {readFile,writeFile,mkdir,rename,lstat,readdir,copyFile,unlink} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
-import {discoverSources} from './batch-sources.js';
+import {discoverSources,assertSourceAssociation} from './batch-sources.js';
 import {safePath} from './backup.js';
 import {categoryCatalog,planDigest} from './categories.js';
 import {validateName} from './planning.js';
+import {inventory} from './compatibility.js';
+import {localReferences} from './links.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
@@ -43,6 +45,23 @@ async function currentSources(batch) {
   const result=await discoverSources(batch);
   if(result.flow?.busy)fail('SOURCE_BUSY','知识库存在待执行或执行中的任务，请暂停并处理后重试');
   return result.sources;
+}
+async function checkNewLinks(batch,moves){
+ const changed=moves.filter(move=>path.resolve(move.from)!==path.resolve(move.to));if(!changed.length)return;
+ const documents=new Map();
+ const roots=await Promise.all([batch.libraryPath,batch.sourceRoot].map(root=>safePath(root)));
+ for(const root of new Set(roots))for(const file of (await inventory(root)).files.filter(file=>/\.md$/i.test(file.path))){const full=path.join(root,file.path);documents.set(key(full),full);}
+ for(const file of documents.values()){
+  const references=localReferences(await readFile(file,'utf8'));
+  if(changed.some(move=>key(move.from)===key(file))&&references.length)fail('UNSUPPORTED_NEW_LINKS',`新增材料含本地图片或材料链接，当前归档不能证明目标不变，保留原处：${file}`);
+  for(const reference of references){
+   if(reference.invalid)continue;
+   const relative=path.resolve(path.dirname(file),reference.decoded);
+   const targets=reference.kind==='wiki'?[relative,path.resolve(roots[1],reference.decoded),path.resolve(roots[0],reference.decoded)]:[relative];
+   const targetsMoved=changed.some(move=>targets.some(target=>key(target)===key(move.from)||(!path.extname(reference.decoded)&&key(`${target}.md`)===key(move.from)))||(reference.kind==='wiki'&&key(move.from).endsWith('/'+reference.decoded.toLowerCase().replace(/\.md$/i,'')+'.md')));
+   if(targetsMoved)fail('UNSUPPORTED_NEW_LINKS',`未归档材料存在指向本批来源的本地反链，当前不能安全修复，保留原处：${file}`);
+  }
+ }
 }
 
 export function createInboxStrategy({checkpoint=async()=>{}}={}) {
@@ -105,7 +124,8 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       const evolution=batch.flow.evolutionPlan,mappings=[],newFiles=[],destinations=new Set();
       for(const source of selected) {
         const current=discovered.find(value=>key(value.currentPath)===key(source.currentPath));
-        if(!current||current.hash!==source.hash||current.ingestStatus!==source.ingestStatus)fail('STALE_SOURCE','来源记录已变化');
+        if(!current||current.hash!==source.hash)fail('STALE_SOURCE','来源记录已变化');
+        assertSourceAssociation(source,current);
         if(source.status!=='reviewed'||!source.frozenPlan||!source.targetPath)fail('REVIEW_REQUIRED','请先完成命名、分类和路径审核');
         const {planHash,...unsigned}=source.frozenPlan;if(planDigest(unsigned)!==planHash)fail('INVALID_PLAN','文件审核计划已损坏');
         if((await categoryCatalog(categoryRoot)).hash!==source.frozenPlan.catalogHash)fail('STALE_PLAN','分类树变化，需要重新审核');
@@ -114,7 +134,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(source.ingestStatus==='historical')mappings.push({id:source.sourceId,from:`raw/sources/${current.rawIdentity}`,to:path.relative(batch.libraryPath,source.targetPath).replaceAll('\\','/')});
         else if(source.ingestStatus==='new') {
           if(key(source.currentPath)===key(source.targetPath)&&path.resolve(source.currentPath)!==path.resolve(source.targetPath))fail('CASE_ONLY_NEW_UNSUPPORTED','未摄取材料仅大小写改名需先人工处理，不能静默忽略');
-          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash});
+          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash});
         }
         else fail('UNKNOWN_ASSOCIATION','不能安全判断来源关联');
       }
@@ -122,10 +142,11 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         const from=`raw/sources/${move.from}`,existing=mappings.find(item=>item.from===from);
         if(!existing)mappings.push({id:`history:${move.from}`,from,to:`raw/sources/${move.to}`});
       }
+      await checkNewLinks(batch,newFiles);
       return {historicalRequest:mappings.length?{mappings,...(evolution?{evolutionPlan:evolution}:{})}:null,newFiles,affectedSourceIds:selected.map(source=>source.sourceId),watchConfig:await watchSettings(batch)};
     },
     async archive({batch,slice,artifactDirectory}) {
-      const raw=path.join(batch.libraryPath,'raw/sources');
+      const raw=path.join(batch.libraryPath,'raw/sources'),sourceRoot=await safePath(batch.sourceRoot);
       await safePath(artifactDirectory);
       if(inside(batch.libraryPath,artifactDirectory)||inside(batch.sourceRoot,artifactDirectory))fail('UNSAFE_JOURNAL','归档日志必须在库与 Inbox 之外');
       const archiveJournalPath=path.join(artifactDirectory,'inbox-archive.json');
@@ -143,19 +164,22 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(slice.historicalResult?.items?.some(item=>['failed','applied-unverified','not-run','pending','selected'].includes(item.status)))fail('HISTORY_REQUIRED','历史材料仍有未成功项目');
         if(slice.historicalRequest?.mappings?.some(mapping=>!slice.historicalResult?.items?.some(item=>item.from===mapping.from&&item.to===mapping.to&&item.status==='succeeded')))fail('HISTORY_REQUIRED','新增材料依赖的历史映射尚未全部成功，不能扩大安全子集');
         const watch=await watchSettings(batch);if(watch.hash!==slice.watchConfig.hash)fail('STALE_SETTINGS','首次摄取设置变化，请重新审核');
-        await currentSources(batch);
+        const checkAssociations=async()=>{const found=await discoverSources({...batch,includeIdentities:journal.items.filter(item=>item.status!=='succeeded').map(item=>path.relative(sourceRoot,item.from).replaceAll('\\','/'))});if(found.flow.busy)fail('SOURCE_BUSY','知识库有待处理任务，归档暂停');for(const item of journal.items.filter(item=>item.status!=='succeeded'))assertSourceAssociation(item,found.sources.find(source=>key(source.currentPath)===key(item.from)));};
+        await checkAssociations();
+        await checkNewLinks(batch,journal.items.filter(item=>item.status!=='succeeded'));
         for(const item of journal.items.filter(item=>item.status==='pending')){await checkedFile(item.from,item.hash);await checkTarget(raw,item.to,item.from);}
         for(const item of journal.items) {
           if(item.status==='succeeded')continue;
           if(key(item.from)===key(item.to)){await checkedFile(item.from,item.hash);item.status='succeeded';await save();continue;}
           if(item.status==='pending') {
-            await checkedFile(item.from,item.hash);await checkTarget(raw,item.to,item.from);await mkdir(path.dirname(item.to),{recursive:true});await safePath(path.dirname(item.to));
+            await checkAssociations();await checkedFile(item.from,item.hash);await checkTarget(raw,item.to,item.from);await mkdir(path.dirname(item.to),{recursive:true});await safePath(path.dirname(item.to));
             item.status='copy-intent';await save();await checkpoint('before-copy',item);
             await copyFile(item.from,item.to,constants.COPYFILE_EXCL);await checkedFile(item.to,item.hash);item.status='copied';await save();await checkpoint('copied',item);
           }
           if(item.status!=='copied')fail('ARCHIVE_INTERRUPTED','复制中断，保留来源和目标，请检查归档日志');
           await checkedFile(item.to,item.hash);
-          try{await checkedFile(item.from,item.hash);await checkpoint('before-remove',item);await unlink(item.from);}catch(error){if(error.code!=='ENOENT')throw error;}
+          await checkAssociations();
+          try{await checkedFile(item.from,item.hash);await checkpoint('before-remove',item);await checkAssociations();await unlink(item.from);}catch(error){if(error.code!=='ENOENT')throw error;}
           item.status='succeeded';journal.events.push({sourceId:item.sourceId,kind:'archived',at:new Date().toISOString()});await save();await checkpoint('archived',item);
         }
         journal.status='complete';delete journal.error;

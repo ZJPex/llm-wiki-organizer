@@ -17,12 +17,6 @@ const key = value => value.replaceAll('\\', '/').toLowerCase();
 const within = (root, target) => key(target) === key(root) || key(target).startsWith(`${key(root)}/`);
 const md5 = value => createHash('md5').update(value).digest('hex');
 const activeValidationRoots = new Set();
-function relativeRaw(input) {
-  if (typeof input !== 'string' || !input.startsWith('raw/sources/') || !/\.md$/i.test(input)) fail('INVALID_MAPPING', '映射必须为 raw/sources 下的 Markdown 相对路径');
-  const parts = input.split('/');
-  if (parts.some(part => !part || part === '.' || part === '..' || /[<>:"\\|?*\x00-\x1f]/.test(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part) || part.length > 255)) fail('INVALID_MAPPING', '路径包含越界、Windows 非法名称或保留名');
-  return input;
-}
 function relativeOutput(root, value) {
   if (typeof value !== 'string') fail('UNKNOWN_ASSOCIATION', '产出路径类型未知');
   if (path.isAbsolute(value) || path.win32.isAbsolute(value)) {

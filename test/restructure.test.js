@@ -1,3 +1,4 @@
+import {listenForBrowser} from './helpers/http-server.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import {createRecoveryService} from '../src/recovery.js';
 import {createOriginalExecutionService} from '../src/original-execution.js';
 import {digest,inventory,preflight} from '../src/compatibility.js';
 import {UPSTREAM_COMMIT,nativeRescanVerifier} from '../src/migration-verifier.js';
+import {createApp} from '../src/server.mjs';
 const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
 async function fixture(t){
  const original='# 第1讲 数据库\n'+('查询计划、索引选择与共享缓存的性能问题需要按实际执行路径分析。'.repeat(700));
@@ -45,10 +47,21 @@ test('首次全库先分析长转写/导航并审五层树，再逐批审核执�
  const firstBackup=JSON.parse(await readFile(batch.slices[0].backupReportPath,'utf8'));
  batch=await service.analyzeNext({batchId:batch.batchId,revision:batch.revision,limit:5});const navigation=batch.sources.find(source=>source.identity==='导航.md');
  batch=await service.reviewItem({batchId:batch.batchId,revision:batch.revision,sourceId:navigation.sourceId,name:'课程导航.md'});const beforeSecondExecution=f.calls.length;
- batch=await service.prepareSlice({batchId:batch.batchId,revision:batch.revision,writersPaused:true});const second=batch.slices.at(-1);assert.notEqual(second.backupReportPath,batch.slices[0].backupReportPath);assert.notEqual(JSON.parse(await readFile(second.backupReportPath,'utf8')).baseline.hash,firstBackup.baseline.hash);
+ batch=await service.prepareSlice({batchId:batch.batchId,revision:batch.revision,writersPaused:true});const second=batch.slices.at(-1);const firstPage=await service.get({batchId:batch.batchId,sliceCursor:0,sliceLimit:1});assert.equal(firstPage.slices[0].sliceId,sliceId);assert.equal(batch.sliceCount,2);assert.notEqual(second.backupReportPath,firstPage.slices[0].backupReportPath);assert.notEqual(JSON.parse(await readFile(second.backupReportPath,'utf8')).baseline.hash,firstBackup.baseline.hash);
  batch=await service.validateSlice({batchId:batch.batchId,revision:batch.revision,sliceId:second.sliceId,approved:true,writersPaused:true});batch=await service.prepareOriginal({batchId:batch.batchId,revision:batch.revision,sliceId:second.sliceId,writersPaused:true});batch=await service.applySlice({batchId:batch.batchId,revision:batch.revision,sliceId:second.sliceId,approved:true,writersPaused:true});assert.equal(f.calls.length,beforeSecondExecution);assert.equal(batch.counts.succeeded,2);assert.equal(batch.counts.skipped,2);
 });
 test('分类树调整使文件审核失效，同库两批互斥',async t=>{
  const f=await fixture(t),service=createBatchService(f.options);let batch=await service.create(f.input);batch=await service.analyzeNext({batchId:batch.batchId,revision:batch.revision,limit:5});batch=await service.treeAction({batchId:batch.batchId,revision:batch.revision,action:'propose'});batch=await service.treeAction({batchId:batch.batchId,revision:batch.revision,action:'approve'});const source=batch.sources.find(s=>s.status==='analyzed');batch=await service.reviewItem({batchId:batch.batchId,revision:batch.revision,sourceId:source.sourceId,name:'第1讲 数据库课程.md'});batch=await service.treeAction({batchId:batch.batchId,revision:batch.revision,action:'edit',nodeId:batch.flow.tree.nodes[0].nodeId,segments:['课程资料']});assert.equal(batch.sources.find(s=>s.sourceId===source.sourceId).selected,false);assert.equal(batch.flow.tree.status,'proposed');
  let release,entered;const wait=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);const strategy={...createRestructureStrategy(),analyze:async()=>{entered();await wait;return {status:'analyzed'};}};const parallel=createBatchService({...f.options,strategies:{restructure:strategy}}),a=await parallel.create(f.input),b=await parallel.create(f.input);const running=parallel.analyzeNext({batchId:a.batchId,revision:a.revision});await started;await assert.rejects(parallel.analyzeNext({batchId:b.batchId,revision:b.revision}),{code:'BATCH_BUSY'});release();await running;
+});
+
+test('公开首次分类树跨分支复用 aliases，同义位置不唯一则拒绝',async t=>{
+ const f=await fixture(t),existing='001 工程/001.01 Agent';await mkdir(path.join(f.input.sourceRoot,existing),{recursive:true});await writeFile(path.join(f.input.sourceRoot,existing,'.category.json'),JSON.stringify({description:'智能体工程',aliases:['AI Agent']}));
+ const generate=async(_config,request)=>request.stage==='tree-merge'?{categories:request.categories.map(node=>({segments:node.segments,groups:[node.groupId],reason:node.reason}))}:{categories:request.materials.map((item,index)=>({segments:index===0?['新分支','AI Agent']:['独立主题'],members:[item.sourceId],representatives:[item.sourceId],reason:'复用智能体主题并保留另一材料主分类'}))};
+ const service=createBatchService({...f.options,strategies:{restructure:createRestructureStrategy({generate})}}),server=createApp({batches:service});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(`${base}/api/session`)).json();let batch;
+ const call=async(action,input={})=>{const response=await fetch(`${base}/api/batches/${action}`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({batchId:batch?.batchId,revision:batch?.revision,...input})});const value=await response.json();if(response.ok)batch=value;return {response,value};};
+ await call('create',f.input);await call('analyzeNext',{limit:5});const first=await call('treeAction',{action:'propose'});assert.equal(first.response.status,200);assert.equal(batch.flow.tree.nodes[0].category,existing);assert.equal(batch.flow.tree.nodes[1].category,'002 独立主题');
+ await mkdir(path.join(f.input.sourceRoot,'002 其他/002.01 智能体'),{recursive:true});await writeFile(path.join(f.input.sourceRoot,'002 其他/002.01 智能体/.category.json'),JSON.stringify({description:'另一个边界',aliases:['AI Agent']}));
+ const ambiguous=await call('treeAction',{action:'propose'});assert.equal(ambiguous.response.status,400);assert.equal(ambiguous.value.code,'AMBIGUOUS_CATEGORY');
 });

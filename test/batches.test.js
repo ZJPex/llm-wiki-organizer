@@ -1,3 +1,4 @@
+import {listenForBrowser} from './helpers/http-server.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import {createMigrationService} from '../src/migration.js';
 import {createRecoveryService} from '../src/recovery.js';
 import {createOriginalExecutionService} from '../src/original-execution.js';
 import {UPSTREAM_COMMIT,nativeRescanVerifier} from '../src/migration-verifier.js';
+import {createApp} from '../src/server.mjs';
 const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
 test('批次状态分页、版本冲突与新实例恢复均以磁盘记录为准',async t=>{
  const f=await migrationFixture(t),options={stateDirectory:path.join(f.root,'batch-state')},store=createBatchStore(options),created=await store.create({sources:[],slices:[]});
@@ -22,6 +24,18 @@ test('批次状态分页、版本冲突与新实例恢复均以磁盘记录为�
 test('缺缓存但存在Wiki关联或队列的Raw不被归类为新来源',async t=>{
  const f=await migrationFixture(t);await writeFile(path.join(f.backup.originalPath,'.llm-wiki/ingest-cache.json'),JSON.stringify({entries:{}}));
  const result=await discoverSources({libraryPath:f.backup.originalPath,sourceRoot:path.join(f.backup.originalPath,'raw/sources')});assert.equal(result.sources[0].ingestStatus,'uncertain');
+});
+
+test('公开批次查询白名单排除全文分段，并独立分页所有执行明细',async t=>{
+ const f=await migrationFixture(t),stateDirectory=path.join(f.root,'view-state'),store=createBatchStore({stateDirectory});
+ const rows=Array.from({length:61},(_,index)=>({id:`item-${index}`,sourceId:`source-${index}`,from:`raw/sources/${index}.md`,to:`raw/sources/new-${index}.md`,path:`${index}.md`,status:'succeeded'}));
+ const batch=await store.create({mode:'inbox',libraryPath:f.backup.originalPath,sourceRoot:path.join(f.backup.originalPath,'raw/sources'),flow:{},sources:[{sourceId:'one',identity:'old.md',kind:'body',segments:[{evidence:['SECRET_FULL_SEGMENT'.repeat(1000)]}],analysis:{summary:'概括',evidence:['e'.repeat(1000)],uncertain:false},frozenPlan:{privatePayload:'不可透传'}}],slices:[{sliceId:'one',newFiles:rows,preview:{items:rows,links:{repairs:rows},indexes:{pageMoves:rows,tables:[]}},archiveResult:{status:'complete',items:rows,committedMappings:rows,privateState:'不可透传'}}],events:rows});
+ const server=createApp({batches:createBatchService({stateDirectory})});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(`${base}/api/session`)).json();
+ const get=async extra=>(await(await fetch(`${base}/api/batches/get`,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({batchId:batch.batchId,limit:1,...extra})})).json());
+ const first=await get();assert.equal(first.sources[0].segments,undefined);assert.equal(first.sources[0].frozenPlan,undefined);assert.ok(first.sources[0].analysis.evidence[0].length<=400);assert.equal(first.slices[0].archiveResult.privateState,undefined);assert.equal(first.slices[0].archiveResult.committedMappings,undefined);
+ for(const rows of [first.slices[0].newFiles,first.slices[0].preview.items,first.slices[0].preview.links.repairs,first.slices[0].preview.indexes.pageMoves,first.slices[0].archiveResult.items,first.events])assert.equal(rows.length,1);
+ assert.equal(first.detailNextCursor,1);const second=await get({detailCursor:1});assert.equal(second.sources[0].sourceId,'one');assert.equal(second.slices[0].archiveResult.items[0].from,'raw/sources/1.md');
 });
 test('共享批次小请求闭环通过真实T2/T6/T7/T8，重复应用只读已有结果',async t=>{
  const f=await migrationFixture(t),artifactRoot=path.join(f.root,'artifacts');await mkdir(artifactRoot);

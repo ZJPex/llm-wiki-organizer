@@ -16,7 +16,7 @@ Windows 的产物目录使用独占创建的短随机名；LanceDB 在规划和�
 
 `createBatchService({strategies,planning,backup,migration,recovery,original,stateDirectory})` 注册首次重构与 Inbox 策略。HTTP 为 `/api/batches/create|get|list|analyzeNext|treeAction|reviewItem|prepareSlice|validateSlice|prepareOriginal|applySlice|cancelSlice`，沿用本机会话和 16 KiB 请求上限。
 
-创建输入为 `mode,libraryPath,sourceRoot,wikiSourcePath,configPath,artifactRoot`。变更请求只发送 `batchId,revision` 加一个材料／节点补丁或 `sliceId`；映射与证据留在服务端，不回传全路径清单执行。查询按 `cursor,limit` 分页来源和分批明细，分类树使用 `treeCursor`。每页最多 50 项，原文证据有界展示。
+创建输入为 `mode,libraryPath,sourceRoot,wikiSourcePath,configPath,artifactRoot`。变更请求只发送 `batchId,revision` 加一个材料／节点补丁或 `sliceId`；映射与证据留在服务端，不回传全路径清单执行。查询按 `cursor,limit` 分页来源、`treeCursor` 分页分类节点；`detailCursor` 独立分页每类执行明细（含节点成员、所选来源、链接、索引、逐项结果和事件），`detailNextCursor` 表示仍有明细。`sliceCursor,sliceLimit` 分页分批，默认仅返回最新一批。每页最多 50 项，页面提供独立明细及分批前后翻页。`detailCount` 等计数表示完整记录数量，不以当前页长度代替模型尝试或重扫变更计数。公共响应采用字段白名单，不输出原文 segments、冻结规划、私有身份映射 committedMappings 或恢复前像；证据每条最多 400 字、最多 8 条，完整磁盘证据保留。
 
 状态目录在知识库与来源范围之外，UUID 文件名、内容哈希、原子替换及 revision 校验避免旧审核覆盖新记录。同一进程按规范化知识库路径互斥，跨批次也不能并发写同一库；跨进程外部写入仍必须由用户暂停，T2/T8 再用完整基线核验。
 
@@ -29,3 +29,11 @@ Windows 的产物目录使用独占创建的短随机名；LanceDB 在规划和�
 ## 验收
 
 `test/batches.test.js` 覆盖版本/磁盘复用、未知关联及真实 T2/T6/T7/T8 调用闭环；`test/restructure.test.js` 覆盖长转写、导航、课程身份、五层分类、低信息、共享正文、两批重新备份、反链变化重审、执行阶段零规划模型，以及同库两批互斥。设置 `ORGANIZER_RESCAN_BINARY` 与可选 `ORGANIZER_RESCAN_WSL_DISTRIBUTION` 后使用真实固定上游扫描；不将未配置环境时的 quiet 测试替身当作真实扫描证据。
+
+## 来源关联与新增链接边界
+
+发现、分析和审核冻结每份来源的 `ingestStatus/associationHash`，指纹覆盖对应缓存、产出内容、Wiki sources 关联和来源任务。共享预检及新增归档复制前、复制后删源前再次核对；copied 日志续作仍须核验，不能因副本已存在而删除后来被摄取的来源。关联变化报 `STALE_ASSOCIATION`、保留来源及已复制目标，并持久化需要重新分析的状态。旧批次无关联指纹必须重新分析审核；确认暂停是支持边界，不视为排他锁。
+
+新增归档暂不迁移本地相对图片、材料或双链。来源含此类链接，或所选 Inbox／知识库范围中未移动 Markdown 指向来源时，报 `UNSUPPORTED_NEW_LINKS` 并保留全部文件，不复制附件、不生成正文；HTTP 等外链及纯锚点不受影响。已摄取历史继续使用冻结迁移与链接适配流程。
+
+首次分类树按全目录的真实名称和 aliases 搜索复用，允许跨分支命中唯一同义类；多个既有位置同义时返回 `AMBIGUOUS_CATEGORY`，要求明确边界，不能创建另一重复分类绕过审核。

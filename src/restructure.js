@@ -39,7 +39,26 @@ export function createRestructureStrategy({generate=generateWithModel}={}){
   for(const source of batch.sources)if(digest(await readFile(source.currentPath))!==source.hash)batchFail('SOURCE_CHANGED','生成分类树期间来源改变');invalidate(batch);
   return {tree:{revision:(existing?.revision??0)+1,status:'proposed',nodes:allocate(groups,catalog),catalogHash:catalog.hash,analyzedCount:batch.sources.length,classifiedCount:candidates.length}};
  }
- function allocate(nodes,catalog){const paths=catalog.categories.map(category=>category.path);return nodes.map(node=>{let parent='';for(const label of node.segments){const existing=paths.find(value=>value&&path.posix.dirname(value)===(parent||'.')&&labelOf(value).toLowerCase()===label.toLowerCase());if(existing)parent=existing;else{parent=nextCategoryPath(paths,parent,label);paths.push(parent);}}return {...node,category:parent};});}
+ function allocate(nodes,catalog){
+  const categories=catalog.categories.map(category=>({...category})),paths=categories.map(category=>category.path),normalized=value=>value.trim().toLowerCase().replace(/\s+/g,'');
+  const allocated=[];
+  for(const node of nodes){let parent='',reused=false;
+   for(const label of node.segments){
+    const matches=categories.filter(category=>category.path&&[labelOf(category.path),...(category.aliases??[])].some(value=>normalized(value)===normalized(label)));
+    if(matches.length>1)batchFail('AMBIGUOUS_CATEGORY',`分类“${label}”对应多个既有同名或同义位置，请先明确类别边界`);
+    if(matches.length){parent=matches[0].path;reused=true;}
+    else{parent=nextCategoryPath(paths,parent,label);paths.push(parent);categories.push({path:parent,aliases:[]});}
+   }
+   const prior=allocated.find(value=>value.category===parent);
+   if(prior){prior.members=[...new Set([...prior.members,...node.members])];prior.representatives=[...new Set([...prior.representatives,...node.representatives])].slice(0,3);prior.reason+=`；${node.reason}`;}
+   else allocated.push({...node,segments:parent.split('/').map(labelOf),category:parent,reason:node.reason+(reused?'；复用已有同名或同义分类':'')});
+   // 跨分支复用后，废弃的临时父目录不能占用后续分类的最小空号。
+   const retained=new Set(catalog.categories.map(category=>category.path));
+   for(const value of allocated){let prefix='';for(const part of value.category.split('/')){prefix=prefix?`${prefix}/${part}`:part;retained.add(prefix);}}
+   categories.splice(0,categories.length,...categories.filter(category=>retained.has(category.path)));paths.splice(0,paths.length,...paths.filter(value=>retained.has(value)));
+  }
+  return allocated;
+ }
  async function review({batch,source,input,planning}){
   const tree=batch.flow.tree;if(tree?.status!=='approved')batchFail('TREE_REVIEW_REQUIRED','先审核分类树，再形成文件名和路径批次');
   if(input.action==='exclude')return {sourcePatch:{selected:false,status:'skipped',skipReason:'用户选择保留原处'}};
