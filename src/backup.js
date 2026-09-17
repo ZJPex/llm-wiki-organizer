@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inventory, preflight } from './compatibility.js';
+import { canonicalPath } from './filesystem-paths.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const normalize = value => value.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
@@ -70,7 +71,7 @@ async function copyTree(source, destination, baseline, directories, copy) {
 }
 
 // 仅修改已核验的结构化位置。未知字段中的绝对路径或旧库身份阻止验证副本启用。
-export async function relocateValidationCopy(validationPath, originalPath) {
+export async function relocateValidationCopy(validationPath, originalPath, { originalAliases = [] } = {}) {
   const state = name => path.join(validationPath, '.llm-wiki', name);
   let identity;
   try { identity = JSON.parse(await readFile(state('project.json'), 'utf8')); }
@@ -89,15 +90,16 @@ export async function relocateValidationCopy(validationPath, originalPath) {
   if (!cache.entries || typeof cache.entries !== 'object' || Array.isArray(cache.entries)) fail('UNKNOWN_STATE', '缓存结构未知');
   for (const entry of Object.values(cache.entries)) {
     if (!Array.isArray(entry.filesWritten)) fail('UNKNOWN_STATE', '缓存产出路径未知');
-    entry.filesWritten = entry.filesWritten.map(file => {
+    entry.filesWritten = await Promise.all(entry.filesWritten.map(async file => {
       if (typeof file !== 'string') fail('UNKNOWN_STATE', '缓存产出路径未知');
       if (path.isAbsolute(file) || path.win32.isAbsolute(file)) {
-        if (!contains(originalPath, file)) fail('EXTERNAL_ASSOCIATION', '缓存产出指向知识库之外');
-        return `${validationPath.replaceAll('\\', '/')}${file.replaceAll('\\', '/').slice(originalPath.replaceAll('\\', '/').length)}`;
+        const canonical = await canonicalPath(file);
+        if (!contains(originalPath, canonical)) fail('EXTERNAL_ASSOCIATION', '缓存产出指向知识库之外');
+        return path.join(validationPath, path.relative(originalPath, canonical)).replaceAll('\\', '/');
       }
       if (file.replaceAll('\\', '/').split('/').includes('..')) fail('EXTERNAL_ASSOCIATION', '缓存产出包含父目录跳转');
       return file;
-    });
+    }));
   }
   const queues = [await load('ingest-queue.json'), (await load('file-change-queue.json')).tasks];
   for (const queue of queues) {
@@ -110,7 +112,7 @@ export async function relocateValidationCopy(validationPath, originalPath) {
     }
   }
   const first = await inventory(validationPath);
-  const oldPaths = [originalPath, originalPath.replaceAll('\\', '/'), originalPath.replaceAll('/', '\\')].flatMap(value => [value, JSON.stringify(value).slice(1, -1)]);
+  const oldPaths = [originalPath, ...originalAliases].flatMap(root => [root, root.replaceAll('\\', '/'), root.replaceAll('/', '\\')]).flatMap(value => [value, JSON.stringify(value).slice(1, -1)]);
   for (const file of first.files) {
     const transformed = data.has(file.path) ? JSON.stringify(data.get(file.path), null, 2) : null;
     const bytes = transformed === null ? await readFile(path.join(validationPath, file.path)) : Buffer.from(transformed);
@@ -181,7 +183,7 @@ export async function createBackup(input, { inspect = preflight, copy = copyFile
     await mkdir(report.validationPath);
     await copyTree(report.backupPath, report.validationPath, report.baseline, report.directories, copy);
     report.phase = 'relocation';
-    report.relocation = await relocateValidationCopy(report.validationPath, report.originalPath);
+    report.relocation = await relocateValidationCopy(report.validationPath, report.originalPath, { originalAliases: [input.libraryPath] });
     await checkpoint('validation-relocated', report);
     await verifyBackup(report.backupPath, report.baseline, report.directories);
     if ((await inventory(report.originalPath)).hash !== report.baseline.hash) fail('ORIGINAL_CHANGED', '创建验证副本期间原库发生变化');

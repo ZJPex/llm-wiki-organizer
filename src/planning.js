@@ -2,6 +2,7 @@ import { readFile, readdir, realpath, lstat, mkdir, writeFile, rename } from 'no
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
+import { canonicalPath } from './filesystem-paths.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -40,7 +41,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
   async function state(root, libraryPath) {
     const canonical = await realpath(root);
-    const location = path.resolve(stateDirectory);
+    const location = await canonicalPath(stateDirectory);
     if (libraryPath) { const library = await realpath(libraryPath); const inside = path.relative(library, location); if (!inside || (!inside.startsWith('..') && !path.isAbsolute(inside))) throw new Error('方案状态目录必须在知识库之外'); }
     const relative = path.relative(canonical, location);
     if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) throw new Error('方案状态目录必须在源目录之外');

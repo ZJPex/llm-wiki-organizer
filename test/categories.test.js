@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createPlanningService } from '../src/planning.js';
@@ -33,7 +33,7 @@ test('HTTP 批次命名后跨分支复用现有分类并冻结单一目标，不
   const proposed = await call('classify'); assert.equal(proposed.status, 200); assert.equal(proposed.data.classification.category, '300 计算机/301 Agent'); assert.equal(proposed.data.confirmedName, '项目甲 第03章 智能体.MD');
   assert.ok(calls.find(c => c.stage === 'category-choice').categories.some(c => c.description.includes('工程化')));
   assert.equal((await call('confirmCategory', { category: '不存在' })).status, 400);
-  const approved = await call('confirmCategory', { category: '100 项目' }); assert.equal(approved.status, 200); assert.equal(approved.data.frozenPlan.finalPath, path.join(categoryRoot, '100 项目', '项目甲 第03章 智能体.MD'));
+  const approved = await call('confirmCategory', { category: '100 项目' }); assert.equal(approved.status, 200); assert.equal(approved.data.frozenPlan.finalPath, path.join(await realpath(categoryRoot), '100 项目', '项目甲 第03章 智能体.MD'));
   await mkdir(path.join(sourceRoot, 'other')); await writeFile(path.join(sourceRoot, 'other', '另一个.md'), contents['项目甲.md']);
   await call('analyze', { identity: 'other/另一个.md' }); await call('confirm', { identity: 'other/另一个.md', name: '项目甲 第03章 智能体.MD' }); await call('classify', { identity: 'other/另一个.md' }); assert.equal((await call('confirmCategory', { identity: 'other/另一个.md', category: '100 项目' })).status, 400);
   const restarted = createPlanningService({ generate, stateDirectory }); assert.deepEqual((await restarted.list(input)).entries['项目甲.md'].frozenPlan, approved.data.frozenPlan);

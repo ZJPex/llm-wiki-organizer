@@ -1,6 +1,7 @@
 import { readFile, readdir, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { canonicalPath } from './filesystem-paths.js';
 
 export const digest = data => createHash('sha256').update(data).digest('hex');
 const manifest = JSON.parse(await readFile(new URL('./upstream-manifest.json', import.meta.url), 'utf8'));
@@ -72,7 +73,7 @@ export async function preflight({ libraryPath, wikiSourcePath, writersPaused = f
         status = 'ingested';
         if (entry.hash !== file.hash) { status = 'changed'; block('SOURCE_CHANGED', `已摄取源内容变化：${identity}`); }
         for (const output of entry.filesWritten) {
-          const relative = path.relative(report.libraryPath, path.resolve(report.libraryPath, output)).split(path.sep).join('/');
+          const relative = path.relative(report.libraryPath, await canonicalPath(path.resolve(report.libraryPath, output))).split(path.sep).join('/');
           if (!byPath.has(relative)) { status = 'missing-association'; block('MISSING_ASSOCIATION', `已摄取源缺少库内产出：${identity}`); }
         }
       }

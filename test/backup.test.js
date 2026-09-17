@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
@@ -54,7 +54,7 @@ test('页面入口创建完整备份和独立重定位副本，源和备份字�
   const identity = JSON.parse(await readFile(path.join(f.input.validationPath, '.llm-wiki/project.json'), 'utf8'));
   assert.notEqual(identity.id, 'original-project-uuid');
   const cache = JSON.parse(await readFile(path.join(f.input.validationPath, '.llm-wiki/ingest-cache.json'), 'utf8'));
-  assert.ok(cache.entries['old.md'].filesWritten[0].startsWith(f.input.validationPath.replaceAll('\\', '/')));
+  assert.ok(cache.entries['old.md'].filesWritten[0].startsWith((await realpath(f.input.validationPath)).replaceAll('\\', '/')));
   await writeFile(path.join(f.input.validationPath, 'wiki/shared.md'), '副本独立写入');
   assert.deepEqual(await inventory(f.input.libraryPath), before);
   assert.deepEqual(await inventory(f.input.backupPath), before);
