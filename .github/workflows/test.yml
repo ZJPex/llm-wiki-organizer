@@ -1,0 +1,60 @@
+name: 整理器验证
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: 安装锁定的整理器依赖
+        run: npm ci --no-audit --no-fund
+      - name: 运行批次和页面入口测试
+        run: npm test
+  upstream-rescan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nashsu/llm_wiki
+          ref: e8082119649e6a8e1cf85eaf289adcabfdf39d4e
+          path: .upstream
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装锁定的整理器依赖
+        run: npm ci --no-audit --no-fund
+      - name: 校验并准备固定上游扫描源码
+        run: node scripts/upstream-rescan/prepare.mjs .upstream "$RUNNER_TEMP/organizer-rescan"
+      - name: 验证真实文件扫描与变更队列
+        run: cargo test --locked --manifest-path "$RUNNER_TEMP/organizer-rescan/Cargo.toml"
+      - name: 构建真实重扫程序
+        run: cargo build --locked --manifest-path "$RUNNER_TEMP/organizer-rescan/Cargo.toml"
+      - name: 准备固定上游前端与副作用守卫
+        run: node scripts/upstream-frontend/prepare.mjs .upstream "$RUNNER_TEMP/organizer-frontend"
+      - name: 安装锁定的集成测试依赖
+        working-directory: ${{ runner.temp }}/organizer-frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: 验证上游前端消费真实扫描结果
+        working-directory: ${{ runner.temp }}/organizer-frontend
+        env:
+          UPSTREAM_RESCAN_COMMAND: '["${{ runner.temp }}/organizer-rescan/target/debug/organizer-upstream-rescan"]'
+        run: npx --no-install vitest run --config vitest.config.mjs
+      - name: 用真实上游扫描验证迁移后的合成副本
+        env:
+          ORGANIZER_RESCAN_BINARY: ${{ runner.temp }}/organizer-rescan/target/debug/organizer-upstream-rescan
+        run: npm test
