@@ -39,7 +39,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       }
       const workspaceAction = /^\/api\/workspace\/(list|save|create|categories)$/.exec(req.url)?.[1];
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
-      const batchAction = /^\/api\/batches\/(create|get|getReport|list|startAnalysis|pauseAnalysis|continueAnalysis|startHistoryValidation|continueHistoryValidation|analyzeNext|classifyNext|confirmRecommendedCategories|confirmPlans|confirmNewArchive|reviewItem|treeAction|prepareSlice|replanSlice|validateSlice|cancelSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
+      const batchAction = /^\/api\/batches\/(create|get|getReport|list|startAnalysis|pauseAnalysis|continueAnalysis|startHistoryValidation|continueHistoryValidation|applyHistoryPlan|analyzeNext|classifyNext|confirmRecommendedCategories|confirmPlans|confirmNewArchive|reviewItem|treeAction|prepareSlice|replanSlice|validateSlice|cancelSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
       const recoveryAction = /^\/api\/recovery\/(inspect|plan|execute|get)$/.exec(req.url)?.[1];
       const migrationAction = /^\/api\/migration\/(plan|execute)$/.exec(req.url)?.[1];
       const originalAction = /^\/api\/original\/(prepare|execute|get)$/.exec(req.url)?.[1];
