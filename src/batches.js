@@ -1,3 +1,4 @@
+import {createNewArchiveWorkflow} from './new-archive-workflow.js';
 import {createBatchJobs,analysisJobView,assertAnalysisAccess} from './batch-jobs.js';
 import {batchView} from './batch-view.js';
 import {canConfirmRecommendedCategory} from './category-confirmation.js';
@@ -121,5 +122,6 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
    }return record;
   });}
  });
- return {...jobs,create,get:async input=>view(await store.get(input.batchId),input),list:async input=>{const result=await store.list(input);return {...result,records:result.records.map(record=>view(record,{limit:1}))};},analyzeNext,classifyNext,confirmRecommendedCategories,confirmPlans,reviewItem,treeAction,prepareSlice,replanSlice,validateSlice,cancelSlice,prepareOriginal,applySlice};
+ const confirmNewArchive=createNewArchiveWorkflow({store,view,operate,strategy,planning,fresh,reconcile});
+ return {...jobs,confirmNewArchive,create,get:async input=>view(await store.get(input.batchId),input),list:async input=>{const result=await store.list(input);return {...result,records:result.records.map(record=>view(record,{limit:1}))};},analyzeNext,classifyNext,confirmRecommendedCategories,confirmPlans,reviewItem,treeAction,prepareSlice,replanSlice,validateSlice,cancelSlice,prepareOriginal,applySlice};
 }

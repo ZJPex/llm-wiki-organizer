@@ -29,6 +29,7 @@ export function batchView(batch,{cursor=0,limit=25,treeCursor=0,detailCursor=0,s
    evolution:source.evolution?{status:source.evolution.status,reason:brief(source.evolution.reason),operations:page(source.evolution.operations,operation)}:undefined};
  });
  const flow=pick(batch.flow,['busy','stage','historyBeforeNew']);
+ if(batch.flow.newArchives?.length){const run=batch.flow.newArchives.at(-1);flow.newArchive={...pick(run,['requestId','status','startedAt']),items:page(run.items,row),counts:run.items.reduce((counts,item)=>(counts[item.status]=(counts[item.status]??0)+1,counts),{})};}
  if(batch.flow.categoryConfirmation)flow.categoryConfirmation=pick(batch.flow.categoryConfirmation,['status','total','completed','confirmed','failed','skipped']);
  if(batch.flow.classificationCurrent)flow.classificationCurrent=pick(batch.flow.classificationCurrent,['sourceId','identity','startedAt','status','stage','step','totalSteps']);
  if(batch.flow.analysisCurrent)flow.analysisCurrent=pick(batch.flow.analysisCurrent,['sourceId','identity','startedAt','status','stage','step','totalSteps','round']);
