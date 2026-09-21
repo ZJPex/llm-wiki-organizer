@@ -1,14 +1,15 @@
 import {classifyAll} from './classify-all.js';
-import {analyzeAll} from './analyze-all.js';
+import {backgroundAnalysis} from './background-analysis.js';
 import {withTreeProgress} from './tree-progress.js';
 import {requestBatch as api,statusName,renderDetailPager} from './batch-ui.js';
 const $=selector=>document.querySelector(selector);
-let batch=null,slice=null,cursor=0,busy=false,pagination={},analyzing=false,pauseRequested=false,classifying=false,classifyPaused=false;
+let batch=null,slice=null,cursor=0,busy=false,pagination={},classifying=false,classifyPaused=false;
 const analyzeButton=document.querySelector('#analyze');
 analyzeButton.textContent='一键分析全部';
 const pauseButton=document.createElement('button');pauseButton.textContent='暂停分析';pauseButton.hidden=true;analyzeButton.after(pauseButton);
 const analysisMessage=document.createElement('p');analysisMessage.setAttribute('role','status');pauseButton.after(analysisMessage);
-pauseButton.onclick=()=>{pauseRequested=true;pauseButton.disabled=true;analysisMessage.textContent='将在当前组完成后暂停，已完成结果会保留。';};
+const analysis=backgroundAnalysis({getBatch:()=>batch,request:api,update:value=>{batch=value;render();},onError:error=>{$('#error').textContent=error.message;}});
+pauseButton.onclick=()=>analysis.pause().catch(error=>{$('#error').textContent=error.message;});
 async function analyzeRequest(action,input){
  return withTreeProgress({operation:()=>api(action,input),read:()=>api('get',{batchId:input.batchId,cursor,limit:50}),update:value=>{batch=value;render();}});
 }
@@ -42,7 +43,7 @@ function render(){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(current.startedAt))/1000));
   p($('#progress'),`${batch.interrupted?'已中断，可继续分析':'正在分析'}：${current.identity}；${current.stage==='segment'?'正文分段':current.stage==='synthesis'?`汇总第 ${current.round} 轮`:'检查来源'}${current.step?` ${current.step}/${current.totalSteps}`:''}；本文件已耗时 ${Math.floor(seconds/60)} 分 ${seconds%60} 秒。`);
  }
- pauseButton.hidden=!analyzing;pauseButton.disabled=!analyzing||pauseRequested;
+ analysis.render(analyzeButton,pauseButton,analysisMessage);
  const cp=batch.classificationProgress,cc=batch.flow?.classificationCurrent;
  if(cp)p($('#progress'),`分类推荐：已完成 ${cp.completed} / ${cp.total} 份，剩余 ${cp.remaining} 份，失败 ${cp.failed} 份，未纳入 ${cp.skipped} 份（未确认名称、需补充信息或已排除）。`);
  if(cc?.status==='running'){
@@ -65,16 +66,12 @@ function render(){
  }
  slice=batch.slices?.at(-1)??slice;const detail=$('#slice');detail.replaceChildren();if(slice){p(detail,`执行片段 ${slice.sliceId} · ${statusName(slice.status)}`);for(const item of slice.newFiles??slice.preview?.newFiles??[])p(detail,`新增：${item.from} → ${item.to}`);for(const item of slice.preview?.items??slice.historicalRequest?.mappings??[])p(detail,`历史：${item.from} → ${item.to}（${statusName(item.status)??'待审核'}）`);for(const key of ['backupReportPath','validationJournalPath','recoveryReportPath','authorizationPlanPath','originalResultPath','originalJournalPath'])if(slice[key])p(detail,`${key}：${slice[key]}`);if(slice.watchConfig)p(detail,slice.watchConfig.message);for(const result of [slice.historicalResult,slice.archiveResult]){if(result){p(detail,`阶段结果：${statusName(result.status)}`);if(result.archiveJournalPath)p(detail,`归档日志：${result.archiveJournalPath}`);for(const item of result.items??[])p(detail,`${item.from} → ${item.to}：${statusName(item.status)}`);if(result.error)p(detail,result.error.message);}}}
  renderDetailPager(detail,batch,patch=>run(async()=>{pagination=patch;}));
- document.querySelectorAll('form button').forEach(button=>button.disabled=busy);for(const id of ['analyze','prepare'])$(`#${id}`).disabled=busy;$('#next').disabled=busy||!(batch.nextCursor??((batch.sources?.length??0)===50));for(const id of ['validate','original','apply'])$(`#${id}`).disabled=busy||!slice;
+ document.querySelectorAll('form button').forEach(button=>button.disabled=busy);for(const id of ['prepare'])$(`#${id}`).disabled=busy;$('#next').disabled=busy||!(batch.nextCursor??((batch.sources?.length??0)===50));for(const id of ['validate','original','apply'])$(`#${id}`).disabled=busy||!slice;
  $('#validate').textContent=slice?.planManifestPath?'验证副本并演练恢复':'校验新增归档条件';$('#original').textContent=slice?.planManifestPath?'准备正式原库执行审核':'准备新增归档审核';$('#apply').textContent=slice?.status==='complete'?'读取已完成结果':slice?.planManifestPath?'执行历史迁移与新增归档':'执行新增归档';
 }
 $('#create').addEventListener('submit',event=>{event.preventDefault();run(async()=>{const input=Object.fromEntries(new FormData(event.target));const value=await api('create',{mode:'inbox',...input});batch=value.batch??value;cursor=0;pagination={};slice=null;$('#resume input').value=batch.batchId;});});
 $('#resume').addEventListener('submit',event=>{event.preventDefault();run(async()=>{batch={batchId:new FormData(event.target).get('batchId')};cursor=0;pagination={};slice=null;});});
-$('#analyze').onclick=()=>run(async()=>{
- analyzing=true;pauseRequested=false;analysisMessage.textContent='连续分析剩余材料；请保持页面打开。分析完成后审核名称和分类。';render();
- try{const result=await analyzeAll({getBatch:()=>batch,request:analyzeRequest,update:value=>{batch=value;render();},stopped:()=>pauseRequested});analysisMessage.textContent=result==='complete'?'全部待分析材料已处理，请审核名称和分类；信息不足的材料可单独重新分析主题。':'已暂停，点击一键分析全部可继续。';}
- finally{analyzing=false;pauseButton.hidden=true;}
-});
+$('#analyze').onclick=()=>run(()=>analysis.start());
 $('#next').onclick=()=>run(async()=>{cursor=batch.nextCursor??cursor+50;pagination.cursor=cursor;});
 for(const [id,action] of [['prepare','prepareSlice'],['validate','validateSlice'],['original','prepareOriginal'],['apply','applySlice']])$(`#${id}`).onclick=()=>run(async()=>{if(!$('#paused').checked)throw new Error('请先暂停全部外部写入');if(['validate','apply'].includes(id)&&!$('#approved').checked)throw new Error('请审核并确认所选范围');await api(action,{batchId:batch.batchId,revision:batch.revision,sliceId:slice?.sliceId,writersPaused:true,approved:$('#approved').checked});});
 
