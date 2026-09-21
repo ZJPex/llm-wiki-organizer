@@ -145,15 +145,33 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
-      if (!entry?.confirmedName || entry.reviewRequired) throw new Error('请先确认当前文件名');
+      if (!entry) throw new Error('请先完成全文分析');
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('源文件变化，请重新分析');
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
-      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName) };
+      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName ?? entry.suggestion ?? path.basename(entry.identity)) };
       delete entry.frozenPlan;
+      await persist(saved.file, saved.data);
+      return entry;
+    }),
+    // 名称与分类在全部校验通过后一次保存，建议名不冒充已确认名。
+    confirmPlan: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const file = await sourceFile(input.sourceRoot, input.identity);
+      const entry = saved.data.entries[input.identity];
+      if (!entry?.classification || !entry.analysis || entry.analysis.uncertain || !['body','navigation'].includes(entry.kind) || entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('内容证据不足或源基线变化');
+      if (saved.data.evolution?.operations?.length) throw new Error('目录调整尚未解决，请先处理目录依赖');
+      const name = validateName(input.name);
+      if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
+      const catalog = await categoryCatalog(entry.classification.catalogRoot);
+      if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
+      const target = await finalTarget(catalog, input.category, name, file);
+      if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      Object.assign(entry, {confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
