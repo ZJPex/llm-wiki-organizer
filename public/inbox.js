@@ -77,3 +77,6 @@ $('#analyze').onclick=()=>run(async()=>{
 });
 $('#next').onclick=()=>run(async()=>{cursor=batch.nextCursor??cursor+50;pagination.cursor=cursor;});
 for(const [id,action] of [['prepare','prepareSlice'],['validate','validateSlice'],['original','prepareOriginal'],['apply','applySlice']])$(`#${id}`).onclick=()=>run(async()=>{if(!$('#paused').checked)throw new Error('请先暂停全部外部写入');if(['validate','apply'].includes(id)&&!$('#approved').checked)throw new Error('请审核并确认所选范围');await api(action,{batchId:batch.batchId,revision:batch.revision,sliceId:slice?.sliceId,writersPaused:true,approved:$('#approved').checked});});
+
+const initialBatchId=new URLSearchParams(globalThis.location?.search??'').get('batchId');
+if(initialBatchId)run(async()=>{batch={batchId:initialBatchId};$('#resume input').value=initialBatchId;});
