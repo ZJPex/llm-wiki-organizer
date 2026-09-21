@@ -65,3 +65,6 @@ $('#bulk-preview').onclick=()=>run(async()=>{
   return '审核结果已保存；失败材料请修改后重审。下一步可为已审核材料准备备份与分批方案。';
  });host.append(confirm);
 });
+
+const initialBatchId=new URLSearchParams(globalThis.location?.search??'').get('batchId');
+if(initialBatchId)run(async()=>{batch=await requestBatch('get',{batchId:initialBatchId});render();});
