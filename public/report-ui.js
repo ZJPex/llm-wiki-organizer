@@ -1,0 +1,2 @@
+export const reportStatus=value=>({complete:'全部完成',partial:'部分完成',blocked:'依赖阻断',failed:'执行失败',retained:'材料保留原处',pending:'等待分析或审核',running:'正在执行','awaiting-apply':'验证通过，等待最终应用','needs-recovery':'需要检查执行现场'})[value]??value;
+export const reportSummary=report=>`整批 ${report.counts.total} 份：成功 ${report.counts.succeeded}，保留 ${report.counts.retained}，阻断 ${report.counts.blocked}，失败 ${report.counts.failed}，未验证 ${report.counts.unverified}，待处理 ${report.counts.pending}`;
