@@ -1,13 +1,14 @@
 import {loadReview,reviewReason,confirmReview} from './bulk-review.js';
 import {treeProgressText,withTreeProgress} from './tree-progress.js';
-import {analyzeAll} from './analyze-all.js';
+import {backgroundAnalysis} from './background-analysis.js';
 import {element,requestBatch,renderBatchSummary,renderSlice,statusName,renderDetailPager} from './batch-ui.js';
-const $=selector=>document.querySelector(selector);let batch,busy=false,analyzing=false,pauseRequested=false;
+const $=selector=>document.querySelector(selector);let batch,busy=false;
+const analysis=backgroundAnalysis({getBatch:()=>batch,request:requestBatch,update:value=>{batch=value;render();},onError:error=>{$('#status').textContent=error.message;}});
 async function run(action){if(busy)return;busy=true;document.querySelectorAll('button').forEach(button=>button.disabled=true);$('#status').textContent='正在处理，请等待…';try{const message=await action();$('#status').textContent=message??'进度已保存，可按批次编号继续。';}catch(error){$('#status').textContent=error.message;if(batch){try{batch=await requestBatch('get',{batchId:batch.batchId});render();}catch{}}}finally{busy=false;document.querySelectorAll('button').forEach(button=>button.disabled=false);if(batch)render();}}
 function render(){
  const progress=batch.analysisProgress;
  $('#analysis-progress').textContent=progress?`分析进度：已处理 ${progress.total-progress.remaining} / ${progress.total} 份，剩余 ${progress.remaining} 份，失败 ${progress.failed} 份。`:'';
- $('#pause-analysis').hidden=!analyzing;
+ analysis.render($('#analyze'),$('#pause-analysis'),$('#status'));
 
  $('#work').hidden=false;$('#batch-id').value=batch.batchId;renderBatchSummary($('#summary'),batch);const tree=batch.flow.tree;$('#tree').replaceChildren();const treeProgress=treeProgressText(batch);if(treeProgress)$('#tree').append(element('p',treeProgress));
  if(tree){$('#tree').append(element('p',`${statusName(tree.status)}；已分析 ${tree.analyzedCount} 份，可靠归类 ${tree.classifiedCount} 份。`));for(const node of tree.nodes){const card=element('article');card.append(element('h3',node.category),element('p',node.reason),element('p',`代表材料：${node.representativeFiles?.map(item=>item.identity).join('、')}`));const edit=element('input');edit.value=node.segments.join(' / ');edit.setAttribute('aria-label','分类层级');const button=element('button','修改分类并重新审核');button.onclick=()=>run(()=>mutate('treeAction',{action:'edit',nodeId:node.nodeId,segments:edit.value.split('/').map(s=>s.trim())}));card.append(edit,button);$('#tree').append(card);}$('#tree-next').hidden=tree.nextCursor===null;}
@@ -17,21 +18,15 @@ function render(){
  }
  $('#next-page').hidden=batch.nextCursor===null;const slice=batch.slices.at(-1);$('#slice').replaceChildren();if(slice)renderSlice($('#slice'),slice);renderDetailPager($('#slice'),batch,patch=>run(async()=>{batch=await requestBatch('get',{batchId:batch.batchId,...patch});render();}));$('#slice-approved').checked=false;$('#original-approved').checked=false;$('#tree-approved').checked=false;
  if(busy)document.querySelectorAll('button').forEach(button=>button.disabled=true);
- $('#pause-analysis').disabled=!analyzing||pauseRequested;
+ analysis.render($('#analyze'),$('#pause-analysis'),$('#status'));
 }
 async function mutate(action,input={}){batch=await requestBatch(action,{batchId:batch.batchId,revision:batch.revision,...input});render();}
 const slice=()=>{const value=batch?.slices.at(-1);if(!value)throw new Error('请先生成分批方案');return value.sliceId;};
 const paused=()=>{if(!$('#paused').checked)throw new Error('请先暂停外部写入');return true;};
 $('#create').onsubmit=event=>{event.preventDefault();run(async()=>{const input=Object.fromEntries(new FormData(event.target));input.sourceRoot=input.libraryPath.replace(/[\\/]$/,'')+'/raw/sources';batch=await requestBatch('create',{...input,mode:'restructure'});render();});};
 $('#load').onclick=()=>run(async()=>{batch=await requestBatch('get',{batchId:$('#batch-id').value});render();});
-$('#analyze').onclick=()=>run(async()=>{
- analyzing=true;pauseRequested=false;render();
- try{
-  const outcome=await analyzeAll({getBatch:()=>batch,request:requestBatch,update:value=>{batch=value;render();},stopped:()=>pauseRequested});
-  return outcome==='complete'?'全部材料分析结束，请生成全范围分类树。':'已暂停，进度已保存。点击“分析全部材料”继续。';
- }finally{analyzing=false;}
-});
-$('#pause-analysis').onclick=()=>{pauseRequested=true;$('#pause-analysis').disabled=true;$('#status').textContent='正在暂停：当前组完成后停止，已完成结果会保留。';};
+$('#analyze').onclick=()=>run(()=>analysis.start());
+$('#pause-analysis').onclick=()=>analysis.pause().catch(error=>{$('#status').textContent=error.message;});
 $('#propose').onclick=()=>run(async()=>{const input={batchId:batch.batchId,revision:batch.revision,action:'propose'};const result=await withTreeProgress({operation:()=>requestBatch('treeAction',input),read:()=>requestBatch('get',{batchId:input.batchId}),update:value=>{batch=value;render();}});batch=result;render();});$('#approve-tree').onclick=()=>run(()=>{if(!$('#tree-approved').checked)throw new Error('请审核分类树并勾选确认');return mutate('treeAction',{action:'approve'});});
 $('#tree-next').onclick=()=>run(async()=>{batch=await requestBatch('get',{batchId:batch.batchId,treeCursor:batch.flow.tree.nextCursor});render();});
 $('#next-page').onclick=()=>run(async()=>{batch=await requestBatch('get',{batchId:batch.batchId,cursor:batch.nextCursor});render();});$('#first-page').onclick=()=>run(async()=>{batch=await requestBatch('get',{batchId:batch.batchId});render();});
