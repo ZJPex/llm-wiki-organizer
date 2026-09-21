@@ -6,7 +6,7 @@ export function reconcileReviewDraft(source,current){
  return current;
 }
 export async function mountReviewWorkspace(host,batchId){
- let batch,rows=[],focus=null,page=0,category='',query='',status='',busy=false;
+ let batch,rows=[],focus=null,page=0,category='',query='',status='',busy=false,paused=false;
  const storageKey='organizer-review:'+batchId;
  let drafts={};try{drafts=JSON.parse(sessionStorage.getItem(storageKey)??'{}');}catch{}
  const saveDrafts=()=>sessionStorage.setItem(storageKey,JSON.stringify(drafts));
@@ -43,7 +43,7 @@ export async function mountReviewWorkspace(host,batchId){
  }
  function render(){
   if(!batch)return;
-  notice.textContent=`任务 ${batch.batchId} · ${statusName(batch.analysisJob?.status??batch.phase)}。确认仅保存方案，文件暂不移动。`;
+  notice.textContent=`任务 ${batch.batchId} · ${statusName(batch.analysisJob?.status??batch.phase)}。请集中审核名称、分类与最终位置。`;
   controls.replaceChildren();for(const action of batch.analysisJob?.allowedActions??[])controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();}));
   controls.append(button('刷新建议',load));const legacy=element('a','执行与恢复入口');legacy.href='/inbox?batchId='+encodeURIComponent(batchId);controls.append(legacy);
   const options=(select,values,value,label)=>{select.replaceChildren();const first=element('option',label);first.value='';select.append(first);for(const [key,text] of values){const option=element('option',text);option.value=key;select.append(option);}select.value=value;};
@@ -52,14 +52,18 @@ export async function mountReviewWorkspace(host,batchId){
   const list=filtered();page=Math.min(page,Math.max(0,Math.ceil(list.length/20)-1));const visible=list.slice(page*20,page*20+20);if(!visible.some(s=>s.sourceId===focus))focus=visible[0]?.sourceId;
   const selected=rows.filter(s=>draft(s).selected&&editable(s));summary.textContent=`整批 ${rows.length} 份 · 正常建议 ${rows.filter(s=>editable(s)&&s.classification?.category!==null&&!s.evolution).length} 份 · 例外 ${rows.filter(s=>['needs-information','blocked','analysis-failed','evolution-review','classification-failed'].includes(s.status)||s.classification?.category===null||s.categoryConfirmationError).length} 份 · 当前筛选 ${list.length} 份 · 跨全部页面已选 ${selected.length} 份 · 已保存 ${rows.filter(s=>s.status==='reviewed').length} 份`;
   const table=element('table'),head=element('thead'),headRow=element('tr');for(const title of ['选择','原名称','新名称','主分类','状态'])headRow.append(element('th',title));head.append(headRow);table.append(head);const body=element('tbody');
-  for(const source of visible){const d=draft(source),row=element('tr');row.setAttribute('aria-selected',String(focus===source.sourceId));row.onclick=()=>{focus=source.sourceId;showDetail(source);};
+  for(const source of visible){const d=draft(source),row=element('tr');row.setAttribute('aria-selected',String(focus===source.sourceId));row.onclick=()=>{focus=source.sourceId;for(const other of body.rows)other.setAttribute('aria-selected',String(other===row));showDetail(source);};
    const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&editable(source);checkbox.disabled=!editable(source)||busy;checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;saveDrafts();render();};const cell=element('td');cell.append(checkbox);
    const name=element('input');name.value=d.name;name.disabled=!editable(source)||!!source.confirmedName;name.setAttribute('aria-label','新名称 '+source.identity);name.onchange=()=>{d.name=name.value;d.manual=true;saveDrafts();showDetail(source);};
    const categoryInput=element('input');categoryInput.value=d.category;categoryInput.disabled=!editable(source);categoryInput.setAttribute('aria-label','主分类 '+source.identity);categoryInput.setAttribute('list','category-options-'+source.sourceId);const data=element('datalist');data.id='category-options-'+source.sourceId;for(const value of source.classification?.options??[]){const o=element('option');o.value=value;data.append(o);}categoryInput.onchange=()=>{d.category=categoryInput.value;d.manual=true;saveDrafts();showDetail(source);};
    const nameCell=element('td'),categoryCell=element('td');nameCell.append(name);categoryCell.append(categoryInput,data);row.append(cell,element('td',source.identity),nameCell,categoryCell,element('td',statusName(source.status)+(d.manual?' · 已手改':'')));body.append(row);
   }table.append(body);tableHost.replaceChildren(table);showDetail(visible.find(s=>s.sourceId===focus));
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
-  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(editable(s)&&!s.evolution&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button('保存所选名称与分类',async()=>{await requestBatch('confirmPlans',{batchId,revision:batch.revision,items:selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}))});await load();},!selected.length||!!batch.flow.evolutionPlan));
+  const pureNew=selected.every(s=>s.ingestStatus==='new')&&!batch.flow.evolutionPlan&&!rows.some(s=>s.evolution?.operations?.length);
+  const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.onchange=()=>{paused=pause.checked;};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
+  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(editable(s)&&!s.evolution&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button(pureNew?'确认并归档所选材料':'保存所选名称与分类',async()=>{if(pureNew&&!paused)throw new Error('请先勾选暂停外部写入');await requestBatch(pureNew?'confirmNewArchive':'confirmPlans',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items:selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}))});await load();},!selected.length||!!batch.flow.evolutionPlan));
+  footer.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
+  const archive=batch.flow.newArchive;if(archive){footer.append(element('p','归档结果：成功 '+(archive.counts.succeeded??0)+' 份，保留 '+(archive.counts.retained??0)+' 份，失败 '+(archive.counts.failed??0)+' 份'));for(const item of archive.items)footer.append(element('p',item.identity+'：'+(item.status==='succeeded'?'归档成功':item.reason?.message??statusName(item.status))));}
  }
  search.oninput=()=>{query=search.value;page=0;render();};categoryFilter.onchange=()=>{category=categoryFilter.value;page=0;render();};statusFilter.onchange=()=>{status=statusFilter.value;page=0;render();};
  await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&['running','pausing'].includes(batch?.analysisJob?.status))run(load);},2000);
