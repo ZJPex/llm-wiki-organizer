@@ -37,7 +37,9 @@ async function setup(t) {
 
 test('页面表单到预检入口：真实缓存结构识别根目录历史源并保存只读基线', async t => {
   const f = await setup(t);
-  const page = await (await fetch(f.base)).text();
+  const home = await (await fetch(f.base)).text();
+  assert.match(home, /href="\/preflight"/);
+  const page = await (await fetch(`${f.base}/preflight`)).text();
   assert.match(page, /name="libraryPath"/); assert.match(page, /\/app.js/);
   assert.match(await (await fetch(`${f.base}/app.js`)).text(), /\/api\/preflight/);
   const before = await inventory(f.libraryPath);
