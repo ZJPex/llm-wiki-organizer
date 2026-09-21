@@ -76,21 +76,28 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
     async analyze({batch,source,planning,onProgress,reanalyze}) {
       if(source.ingestStatus==='uncertain')return {status:'blocked',selected:false};
       await checkedFile(source.currentPath,source.hash);
-      const entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
+      let entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
       const reliable=entry.analysis&&!entry.analysis.uncertain&&['body','navigation'].includes(entry.kind);
-      return {...entry,status:reliable?'analyzed':'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
+      if(reliable&&!entry.classification&&planning.classify)entry=await planning.classify({...inputFor(batch,source),onProgress});
+      return {...entry,status:reliable?(entry.classification?'classified':'analyzed'):'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
     },
     async review({batch,source,input,planning,onProgress}) {
       if(input.action==='exclude')return {sourcePatch:{selected:false,status:'excluded',skipReason:'用户排除'}};
       await checkedFile(source.currentPath,source.hash);
       if(source.ingestStatus==='uncertain'||!source.analysis||source.analysis.uncertain||!['body','navigation'].includes(source.kind))fail('INSUFFICIENT_EVIDENCE','来源关联或内容证据不足，保持原处');
       const base=inputFor(batch,source);
+      if(input.action==='confirmPlan') {
+        if(batch.flow.evolutionPlan||batch.sources.some(item=>item.evolution?.operations?.length))fail('EVOLUTION_REVIEW_REQUIRED','目录调整尚未解决，请先处理目录依赖');
+        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category});
+        return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true,manuallyEdited:input.manuallyEdited===true}};
+      }
+      if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
       if(input.action==='confirmName') {
         const entry=await planning.confirm({...base,name:input.name});
         return {sourcePatch:{...entry,status:'named',selected:false,targetPath:null}};
       }
       if(!source.confirmedName)fail('NAME_REQUIRED','先确认文件名，再查找分类');
-      if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
+
       if(!source.classification)fail('CLASSIFICATION_REQUIRED','先检索已有分类，再决定是否需要演化');
       if(input.action==='evolve')return {sourcePatch:{evolution:await planning.evolve({...base,startCategory:input.category??''}),status:'evolution-review',selected:false}};
       if(input.action==='confirmEvolution') {

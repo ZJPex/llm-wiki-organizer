@@ -41,7 +41,7 @@ test('批次 HTTP 批量推荐分类时可查询当前阶段，结果仅待审�
  const value=await fixture(t),{f,batch:input}=value;
  let batch,call,seen=[];
  const planning=createPlanningService({stateDirectory:path.join(f.root,'classify-planning'),generate:async(_,request)=>{
-  if(request.stage.startsWith('category-')){
+  if(request.stage.startsWith('category-') && (await call('get',{batchId:batch.batchId})).phase==='classification-running'){
    const live=await call('get',{batchId:batch.batchId});
    assert.equal(live.phase,'classification-running');assert.equal(live.interrupted,false);
    seen.push(live.flow.classificationCurrent.stage);
@@ -70,6 +70,8 @@ test('分析中公开读取分段进度，重分析仅处理指定的信息不�
  const value=await fixture(t),{batch:input,f}=value;
  let service,initial,calls=0,uncertain=true,observed=false;
  const planning=createPlanningService({stateDirectory:path.join(f.root,'progress-planning'),generate:async(_,request)=>{
+  if(request.stage==='category-search')return {candidates:['001 缓存']};
+  if(request.stage==='category-choice')return {category:'001 缓存',reason:'全文主题',evidence:request.content.evidence,uncertain:false};
   calls++;
   const live=await service.get({batchId:initial.batchId});
   assert.equal(live.phase,'analysis-running');assert.equal(live.interrupted,false);
@@ -84,14 +86,14 @@ test('分析中公开读取分段进度，重分析仅处理指定的信息不�
  assert.ok(observed);assert.equal(result.sources[0].status,'needs-information');assert.equal(result.flow.analysisCurrent.status,'complete');
  uncertain=false;
  result=await service.analyzeNext({batchId:result.batchId,revision:result.revision,sourceId:result.sources[0].sourceId,retryUncertain:true,limit:1});
- assert.equal(calls,2);assert.equal(result.sources[0].status,'analyzed');assert.equal(result.sources[0].suggestion,'缓存一致性.md');
+ assert.equal(calls,2);assert.equal(result.sources[0].status,'classified');assert.equal(result.sources[0].suggestion,'缓存一致性.md');
  assert.equal(await readFile(path.join(input.sourceRoot,'录屏.md'),'utf8'),value.text);
 });
 
 for(const autoIngest of [true,false])test(`Inbox新材料按分析/名字/分类/归档推进，首次摄取开关=${autoIngest}且重启不重复归档`,async t=>{
  const value=await fixture(t,{autoIngest}),{batch,strategy,planning,calls,text}=value;
  const cacheBefore=await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-cache.json'),'utf8'),queueBefore=await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-queue.json'),'utf8');
- const {source,slice}=await reviewed(value);assert.deepEqual(calls,['segment','category-search','category-choice']);assert.equal(slice.historicalRequest,null);
+ const {source,slice}=await reviewed(value);assert.deepEqual(calls,['segment','category-search','category-choice','category-search','category-choice']);assert.equal(slice.historicalRequest,null);
  const result=await strategy.archive({batch,slice,artifactDirectory:batch.artifactRoot});assert.equal(result.status,'complete',JSON.stringify(result.error));assert.equal(await readFile(source.targetPath,'utf8'),text);await assert.rejects(lstat(source.currentPath),{code:'ENOENT'});
  assert.deepEqual(result.newIngestRequests,[]);assert.equal(result.watchConfig.disposition,autoIngest?'awaiting-wiki-policy':'archived-without-ingest-request');
  assert.equal(await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-cache.json'),'utf8'),cacheBefore);assert.equal(await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-queue.json'),'utf8'),queueBefore);

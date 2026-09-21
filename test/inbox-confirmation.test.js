@@ -19,7 +19,7 @@ test('一键确认覆盖整批明确推荐，保留未分类、未命名、已�
   await assert.rejects(lstat(source.targetPath),{code:'ENOENT'});
  }
  assert.deepEqual(Object.fromEntries(batch.sources.map(s=>[s.identity,s.status])),{
-  'a.md':'reviewed','b.md':'reviewed','root.md':'reviewed','unknown.md':'classified','unnamed.md':'analyzed','excluded.md':'excluded','reviewed.md':'reviewed'
+  'a.md':'reviewed','b.md':'reviewed','root.md':'reviewed','unknown.md':'classified','unnamed.md':'classified','excluded.md':'excluded','reviewed.md':'reviewed'
  });
  assert.equal(batch.sources.find(s=>s.identity==='reviewed.md').targetPath,path.join(f.libraryPath,'raw/sources/reviewed.md'));
  assert.equal(batch.slices.length,0);

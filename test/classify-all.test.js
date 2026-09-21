@@ -33,28 +33,28 @@ async function setup(t){
  return {request,getBatch:()=>batch,update:value=>{batch=value;},fail:value=>{failing=value;}};
 }
 
-test('一键分类跨分页处理全部合格材料，暂停后继续，未命名和排除项不受影响',async t=>{
+test('一键分类跨分页处理全部合格材料，暂停后继续，未命名也获分类，排除项不受影响',async t=>{
  const value=await setup(t),{classifyAll}=await import('../public/classify-all.js');
  let paused=false;
  const options={...value,stopped:()=>paused,update:batch=>{value.update(batch);paused=true;}};
  assert.equal(await classifyAll(options),'paused');
  assert.equal(value.getBatch().classificationProgress.remaining,1);
  paused=false;assert.equal(await classifyAll(options),'complete');
- assert.deepEqual(value.getBatch().classificationProgress,{total:2,remaining:0,completed:2,skipped:2,failed:0});
- assert.equal(value.getBatch().sources.find(s=>s.identity==='c.md').status,'analyzed');
+ assert.deepEqual(value.getBatch().classificationProgress,{total:3,remaining:0,completed:3,skipped:1,failed:0});
+ assert.equal(value.getBatch().sources.find(s=>s.identity==='c.md').status,'classified');
  assert.equal(value.getBatch().sources.find(s=>s.identity==='d.md').status,'excluded');
  assert.equal(value.getBatch().sources.filter(s=>s.selected).length,0);
 });
 
 test('分类模型失败后立即显示失败进度，恢复时仅继续剩余项',async t=>{
  const value=await setup(t),{classifyAll}=await import('../public/classify-all.js');
- const options={...value,stopped:()=>false,update:batch=>{value.update(batch);if(batch.classificationProgress.completed===1)value.fail(true);}};
+ const options={...value,stopped:()=>false,update:batch=>{value.update(batch);if(batch.classificationProgress.completed===2)value.fail(true);}};
  await assert.rejects(classifyAll(options),/模拟模型断开/);
  assert.equal(value.getBatch().classificationProgress.failed,1);
- assert.equal(value.getBatch().classificationProgress.completed,1);
+ assert.equal(value.getBatch().classificationProgress.completed,2);
  assert.equal(value.getBatch().flow.classificationCurrent.status,'failed');
  value.fail(false);
  assert.equal(await classifyAll({...value,stopped:()=>false}),'complete');
- assert.equal(value.getBatch().classificationProgress.completed,2);
+ assert.equal(value.getBatch().classificationProgress.completed,3);
  assert.equal(value.getBatch().classificationProgress.failed,0);
 });
