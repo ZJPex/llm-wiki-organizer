@@ -2,7 +2,7 @@ import {element,requestBatch} from './batch-ui.js';
 export async function submitHistoryPlan({batch,items,writersPaused}){
  if(writersPaused!==true)throw new Error('请先确认已暂停 Wiki、Obsidian 和同步程序等外部写入');
  if(!Array.isArray(items)||!items.length)throw new Error('请明确选择本次完整整理范围');
- const saved=await requestBatch('confirmPlans',{batchId:batch.batchId,revision:batch.revision,items,replaceSelection:true});
+ const saved=await requestBatch('confirmPlans',{batchId:batch.batchId,revision:batch.revision,items,treeRevision:batch.flow?.tree?.revision,replaceSelection:true});
  return requestBatch('startHistoryValidation',{batchId:saved.batchId,revision:saved.revision,planHash:saved.historyPlan.planHash,writersPaused});
 }
 export function renderHistoryActions(host,{batch,writersPaused,run,refresh}){

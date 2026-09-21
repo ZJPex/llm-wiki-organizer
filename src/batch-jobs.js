@@ -15,7 +15,7 @@ export function assertAnalysisAccess(batch,input){
  const owner=libraries.get(batch.libraryPath.toLowerCase());
  if(owner&&input[jobOwner]!==owner)batchFail('BATCH_BUSY','该知识库正在后台分析，请先暂停并等待当前材料完成');
 }
-export function createBatchJobs({store,view,step,classify,checkIdle,prepare}){
+export function createBatchJobs({store,view,step,classify,proposeTree,checkIdle,prepare}){
  async function save(job,status,error){
   const batch=await store.get(job.batchId);
   return store.update(batch.batchId,batch.revision,record=>{record.flow.analysisJob={status,...(error?{error:{code:error.code??'ANALYSIS_FAILED',message:error.message}}:{})};return record;});
@@ -27,7 +27,10 @@ export function createBatchJobs({store,view,step,classify,checkIdle,prepare}){
    while(job.status!=='pausing'){
     const batch=await store.get(job.batchId);
     const before=view(batch),analyzing=before.analysisProgress.remaining>0;
-    if(!analyzing&&!(batch.mode==='inbox'&&before.classificationProgress.remaining))break;
+    if(!analyzing&&!(batch.mode==='inbox'&&before.classificationProgress.remaining)){
+     if(batch.mode==='restructure'&&(!batch.flow.tree||batch.flow.tree.status==='stale')&&batch.sources.some(source=>source.analysis?.analysis&&!source.analysis.analysis.uncertain&&!['skipped','blocked'].includes(source.status)))await proposeTree({batchId:batch.batchId,revision:batch.revision,action:'propose',[jobOwner]:job});
+     break;
+    }
     const next=await (analyzing?step:classify)({batchId:job.batchId,revision:batch.revision,limit:1,stopOnFailure:true,[jobOwner]:job});
     const progress=analyzing?'analysisProgress':'classificationProgress';
     if(next[progress].remaining>=before[progress].remaining)batchFail('ANALYSIS_STALLED','分析未取得进展，请检查当前材料后继续');
