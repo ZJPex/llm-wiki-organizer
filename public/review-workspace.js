@@ -1,4 +1,5 @@
 import {element,statusName,requestBatch} from './batch-ui.js';
+import {submitHistoryPlan,renderHistoryActions} from './history-actions.js';
 const editable=source=>source.analysis&&!source.analysis.uncertain&&source.classification&&!['excluded','succeeded','blocked','reviewed'].includes(source.status);
 const selectable=source=>editable(source)||(source.status==='reviewed'&&source.analysis&&!source.analysis.uncertain&&source.classification);
 export function reconcileReviewDraft(source,current){
@@ -23,7 +24,8 @@ export async function mountReviewWorkspace(host,batchId){
  const grid=element('div');grid.className='review-grid';const tableHost=element('div');tableHost.className='table-scroll';const detail=element('section');detail.className='review-detail';detail.setAttribute('aria-label','材料证据详情');grid.append(tableHost,detail);
  const pager=element('nav');pager.setAttribute('aria-label','材料分页');const footer=element('div');footer.className='review-footer';
  const results=element('section');results.hidden=true;results.setAttribute('aria-label','归档结果');
- root.append(notice,error,controls,summary,filters,grid,pager,results,footer);
+ const history=element('section');history.setAttribute('aria-label','历史验证与应用');
+ root.append(notice,error,controls,summary,filters,grid,pager,results,history,footer);
  const button=(label,action,disabled=false)=>{const b=element('button',label);b.disabled=disabled||busy;b.onclick=()=>run(action);return b;};
  async function run(fn){if(busy)return;busy=true;error.textContent='';try{await fn();}catch(e){error.textContent=e.message;try{await load();}catch{}}finally{busy=false;render();}}
  async function load(){
@@ -62,12 +64,13 @@ export async function mountReviewWorkspace(host,batchId){
   }table.append(body);tableHost.replaceChildren(table);showDetail(visible.find(s=>s.sourceId===focus));
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
   const pureNew=selected.every(s=>s.ingestStatus==='new')&&!batch.flow.evolutionPlan&&!rows.some(s=>s.evolution?.operations?.length);
-  const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.onchange=()=>{paused=pause.checked;};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
-  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(selectable(s)&&!s.evolution&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button(pureNew?'确认并归档所选材料':'保存所选名称与分类',async()=>{if(pureNew&&!paused)throw new Error('请先勾选暂停外部写入');await requestBatch(pureNew?'confirmNewArchive':'confirmPlans',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items:selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}))});await load();},!selected.length||!!batch.flow.evolutionPlan));
+  const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.onchange=()=>{paused=pause.checked;render();};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
+  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(selectable(s)&&!s.evolution&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button(pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!selected.length||!!batch.flow.evolutionPlan||batch.historyValidation?.status==='running'));
   footer.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
+  renderHistoryActions(history,{batch,writersPaused:paused,run,refresh:load});
   const archive=batch.flow.newArchive;results.replaceChildren();results.hidden=!archive;if(archive){results.append(element('p','归档结果：成功 '+(archive.counts.succeeded??0)+' 份，保留 '+(archive.counts.retained??0)+' 份，失败 '+(archive.counts.failed??0)+' 份'));for(const item of archive.items)results.append(element('p',item.identity+'：'+(item.status==='succeeded'?'归档成功':item.reason?.message??statusName(item.status))));}
  }
  search.oninput=()=>{query=search.value;page=0;render();};categoryFilter.onchange=()=>{category=categoryFilter.value;page=0;render();};statusFilter.onchange=()=>{status=statusFilter.value;page=0;render();};
- await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&['running','pausing'].includes(batch?.analysisJob?.status))run(load);},2000);
+ await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&(['running','pausing'].includes(batch?.analysisJob?.status)||batch?.historyValidation?.status==='running'||batch?.historyApplication?.status==='running'))run(load);},2000);
  return {refresh:load,filterCategory:value=>{category=value||'@root';page=0;render();}};
 }
