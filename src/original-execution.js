@@ -69,7 +69,7 @@ export function createOriginalExecutionService({ verify = nativeRescanVerifier()
     const physical = { ...backup, validationPath: backup.originalPath, relocation: { ...backup.relocation, validationProjectId: backup.relocation.originalProjectId } };
     const baseline = await inventory(backup.originalPath);
     const compiled = await compileBatchPlan(manifest.request,physical,baseline,{ analyzeLinks,analyzeShared:analyzeSharedOutputs,analyzeIndex:analyzeIndexes });
-    const description = await describeLogicalPlan(compiled,physical);
+    const description = await describeLogicalPlan(compiled,physical,manifest.request.executionGroupSize);
     if (planDigest(description.logicalPlan) !== manifest.logicalPlanHash) fail('PLAN_MISMATCH', '原库确定性方案与已验证冻结决策不同');
     await verifyBackup(backup.originalPath,backup.baseline,backup.directories);
     return { ...proof, physical, baseline, compiled, description };
@@ -77,7 +77,7 @@ export function createOriginalExecutionService({ verify = nativeRescanVerifier()
   async function prepare(input) {
     input=await evidencePaths(input);
     const proof = await compile(input), { backup, manifest, journal, recovery, selected } = proof;
-    const id = randomUUID(), authorizationPlanPath = `${backup.originalPath}.authorization-${id}.json`;
+    const id = input.authorizationId??randomUUID();if(!/^[0-9a-f-]{36}$/i.test(id))fail('INVALID_AUTHORIZATION','授权标识无效');const authorizationPlanPath = `${backup.originalPath}.authorization-${id}.json`;
     const record = { schemaVersion:1, authorizationId:id, authorizationPlanPath, status:'awaiting-review', planId:manifest.planId, logicalPlanHash:manifest.logicalPlanHash, planManifestHash:manifest.manifestHash,
       planManifestPath:input.planManifestPath, validationJournalPath:input.validationJournalPath, validationJournalHash:await hashFile(input.validationJournalPath), recoveryReportPath:input.recoveryReportPath, recoveryReportHash:recovery.reportHash,
       backupManifestHash:manifest.backupManifestHash, originalPath:backup.originalPath, backupPath:backup.backupPath, validationPath:backup.validationPath, recoveryPath:recovery.restoreRoot, originalProjectId:backup.relocation.originalProjectId,
@@ -99,7 +99,7 @@ export function createOriginalExecutionService({ verify = nativeRescanVerifier()
       const pending = { schemaVersion:1,status:'running',authorizationPlanPath:input.authorizationPlanPath,authorizationHash:authorization.authorizationHash,resultPath,journalPath,originalPath:backup.originalPath,backupPath:backup.backupPath,validationPath:backup.validationPath,recoveryPath:recovery.restoreRoot,logicalPlanHash:manifest.logicalPlanHash,planId:manifest.planId,targetRole:'original',targetRoot:backup.originalPath,recovery:{url:'/recovery',journalPath,automaticRollback:false} };
       pending.resultHash=planDigest(pending); await writeFile(resultPath,JSON.stringify(pending,null,2),{flag:'wx'});
       const current = { ...compiled,backup:physical,baseline,record:manifest,reportPath:manifest.backupReportPath,activePlanPath:`${backup.validationPath}.active-plan.json`,used:false,
-        result:{planId:manifest.planId,planManifestPath:authorization.planManifestPath,logicalPlanHash:manifest.logicalPlanHash,batchId:backup.batchId,items:compiled.items,directoryMappings:description.directoryMappings,newDirectories:description.newDirectories,indexes:compiled.indexes,links:compiled.links,originalPath:backup.originalPath,authorizationPlanPath:input.authorizationPlanPath} };
+        result:{planId:manifest.planId,planManifestPath:authorization.planManifestPath,logicalPlanHash:manifest.logicalPlanHash,batchId:backup.batchId,items:compiled.items,executionGroups:manifest.logicalPlan.executionGroups,directoryMappings:description.directoryMappings,newDirectories:description.newDirectories,indexes:compiled.indexes,links:compiled.links,originalPath:backup.originalPath,authorizationPlanPath:input.authorizationPlanPath} };
       let result;
       try {
         result=await executeCompiledMigration(current,{planId:manifest.planId,approved:true,writersPaused:true},{verify,checkpoint,targetRole:'original',revalidate:()=>evidence({...authorization,writersPaused:true}),verifyProtected:async()=>{
@@ -120,7 +120,7 @@ export function createOriginalExecutionService({ verify = nativeRescanVerifier()
         const {journal}=await readRecoveryEvidence(report.journalPath);
         if(journal.targetRole!=='original'||journal.logicalPlanHash!==authorization.logicalPlanHash||journal.planId!==authorization.planId)fail('INVALID_EVIDENCE','执行日志不属于本次审核');
         // 查询不重试写操作；仅公开阶段和状态，不暴露恢复所需的正文原像。
-        return {...report,status:journal.status,phase:journal.phase,items:journal.items,error:journal.error,modelAttempts:journal.modelAttempts,interrupted:!activeRoots.has(authorization.originalPath.toLowerCase())};
+        return {...report,status:journal.status,phase:journal.phase,items:journal.items,executionGroups:journal.executionGroups,groupProgress:journal.groupProgress,error:journal.error,modelAttempts:journal.modelAttempts,interrupted:!activeRoots.has(authorization.originalPath.toLowerCase())};
       }catch(error){if(error.code!=='ENOENT')throw error;}
     }
     return report;
