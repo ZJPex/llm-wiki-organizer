@@ -91,3 +91,21 @@ test('拒绝库内状态、伪造证据与并发源变化，已确认名称不�
   const updated = await planner.analyze(input); assert.ok(calls > before); assert.ok(updated.segments.length); assert.equal(updated.confirmedName, '第03章 已确认.MD'); assert.equal(updated.suggestion, null);
   await assert.rejects(planner.confirm({ ...input, name: '新名字.MD' }), /默认固定/);
 });
+
+test('模型证据首次不精确时强化逐字符约束并只重试一次', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'planning-evidence-retry-')); t.after(() => rm(temp, { recursive: true, force: true }));
+  const sourceRoot = path.join(temp, 'sources'); await mkdir(sourceRoot);
+  const identity = '缓存一致性.md'; const content = '这份材料讨论缓存与数据库之间的一致性校验，并保留可逐字符核对的失败恢复依据。';
+  await writeFile(path.join(sourceRoot, identity), content);
+  const configPath = path.join(temp, 'app-state.json'); await writeFile(configPath, JSON.stringify({ llmConfig: { provider: 'custom', model: 'test', customEndpoint: 'https://example.invalid/v1' } }));
+  const requests = [];
+  const generate = async (_, request) => {
+    requests.push(request);
+    if (!request.evidenceRequirement) return { title: '缓存一致性', summary: '第一次把证据改写了', evidence: ['原文中不存在的改写证据'], uncertain: false };
+    return { title: '缓存一致性', summary: '第二次保留精确证据', evidence: [request.content.slice(0, 12)], uncertain: false };
+  };
+  const result = await createPlanningService({ generate, stateDirectory: path.join(temp, 'state') }).analyze({ sourceRoot, libraryPath: sourceRoot, configPath, identity });
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].evidenceRequirement, /连续.*逐字符/);
+  assert.equal(result.analysis.summary, '第二次保留精确证据');
+});

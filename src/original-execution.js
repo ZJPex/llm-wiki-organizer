@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { readFile, writeFile, rename, lstat } from 'node:fs/promises';
+import { readFile, writeFile, lstat } from 'node:fs/promises';
+import {atomicRename} from './atomic-rename.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { readRecoveryEvidence } from './recovery.js';
 import { safePath, verifyBackup } from './backup.js';
@@ -24,7 +25,7 @@ async function json(file) {
   return JSON.parse(await readFile(file, 'utf8'));
 }
 function checkHash(record, field) { const { [field]: expected, ...data } = record; if (!expected || planDigest(data) !== expected) fail('INVALID_EVIDENCE', '证据哈希不一致'); }
-async function persist(file, data) { delete data.resultHash; data.resultHash = planDigest(data); const temporary = `${file}.tmp-${randomUUID()}`; await writeFile(temporary, JSON.stringify(data,null,2), { flag:'wx' }); await rename(temporary,file); }
+async function persist(file, data) { delete data.resultHash; data.resultHash = planDigest(data); const temporary = `${file}.tmp-${randomUUID()}`; await writeFile(temporary, JSON.stringify(data,null,2), { flag:'wx' }); await atomicRename(temporary,file); }
 function requireSuccess(journal, manifest) {
   if (!['complete','partial'].includes(journal.status) || journal.phase !== 'verified-copy' || journal.targetRole !== 'validation' || journal.modelAttempts?.length !== 0) fail('VALIDATION_REQUIRED', '验证副本尚未成功或存在模型尝试');
   const items = manifest.logicalPlan.items, selected = items.filter(item => item.status === 'selected');

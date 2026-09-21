@@ -73,14 +73,14 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       if(inside(sourceRoot,libraryPath)||(inside(libraryPath,sourceRoot)&&!inside(raw,sourceRoot)))fail('INVALID_INBOX','库内 Inbox 必须位于 raw/sources；外部 Inbox 必须与知识库独立');
       const result=await discoverSources({...input,libraryPath,sourceRoot});return {...result,flow:{...result.flow,stage:'analysis',historyBeforeNew:true}};
     },
-    async analyze({batch,source,planning}) {
+    async analyze({batch,source,planning,onProgress,reanalyze}) {
       if(source.ingestStatus==='uncertain')return {status:'blocked',selected:false};
       await checkedFile(source.currentPath,source.hash);
-      const entry=await planning.analyze(inputFor(batch,source));
+      const entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
       const reliable=entry.analysis&&!entry.analysis.uncertain&&['body','navigation'].includes(entry.kind);
       return {...entry,status:reliable?'analyzed':'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
     },
-    async review({batch,source,input,planning}) {
+    async review({batch,source,input,planning,onProgress}) {
       if(input.action==='exclude')return {sourcePatch:{selected:false,status:'excluded',skipReason:'用户排除'}};
       await checkedFile(source.currentPath,source.hash);
       if(source.ingestStatus==='uncertain'||!source.analysis||source.analysis.uncertain||!['body','navigation'].includes(source.kind))fail('INSUFFICIENT_EVIDENCE','来源关联或内容证据不足，保持原处');
@@ -90,7 +90,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         return {sourcePatch:{...entry,status:'named',selected:false,targetPath:null}};
       }
       if(!source.confirmedName)fail('NAME_REQUIRED','先确认文件名，再查找分类');
-      if(input.action==='classify')return {sourcePatch:{...await planning.classify(base),status:'classified',selected:false,targetPath:null}};
+      if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
       if(!source.classification)fail('CLASSIFICATION_REQUIRED','先检索已有分类，再决定是否需要演化');
       if(input.action==='evolve')return {sourcePatch:{evolution:await planning.evolve({...base,startCategory:input.category??''}),status:'evolution-review',selected:false}};
       if(input.action==='confirmEvolution') {

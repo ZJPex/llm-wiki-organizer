@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import { compileBatchPlan } from './batch-plan.js';
 import { planDigest } from './categories.js';
 import { canonicalPath } from './filesystem-paths.js';
 import {recordKind,relocateRecord} from './relocation-records.js';
+import {atomicRename} from './atomic-rename.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const key = value => value.replaceAll('\\', '/').toLowerCase();
@@ -54,7 +55,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
     const logicalPlanHash = planDigest(logicalPlan);
     if (restored && (restored.logicalPlanHash !== logicalPlanHash || restored.baselineHash !== baseline.hash)) fail('STALE_PLAN', '持久化计划与当前确定性结果不一致');
     const planManifestPath = `${backup.validationPath}.plan-${id}.json`;
-    const request = Object.fromEntries(['reportPath', 'oldPath', 'newPath', 'mappings', 'evolutionPlan', 'exclusions'].filter(name => input[name] !== undefined).map(name => [name, input[name]]));
+    const request = Object.fromEntries(['reportPath', 'oldPath', 'newPath', 'mappings', 'evolutionPlan', 'exclusions', 'linkResolutions'].filter(name => input[name] !== undefined).map(name => [name, input[name]]));
     request.writersPaused = true;
     const backupManifestHash = createHash('sha256').update(await readFile(input.reportPath)).digest('hex');
     const record = { schemaVersion: 1, planId: id, logicalPlanHash, logicalPlan, baselineHash: baseline.hash, beforeBaseline: baseline, backupReportPath: input.reportPath, backupManifestHash, request, targetRole: 'validation', targetRoot: backup.validationPath };
@@ -66,7 +67,7 @@ export function createMigrationService({ verify = nativeRescanVerifier(), checkp
       if (previous && (JSON.parse(previous).schemaVersion !== 1 || JSON.parse(previous).targetRoot !== backup.validationPath)) fail('INVALID_PLAN', '活动计划文件不属于当前验证副本');
       const temporary = `${activePath}.tmp-${randomUUID()}`;
       await writeFile(temporary, JSON.stringify({ schemaVersion: 1, targetRoot: backup.validationPath, planId: id, logicalPlanHash }), { flag: 'wx' });
-      await rename(temporary, activePath);
+      await atomicRename(temporary, activePath);
     }
     else if (record.manifestHash !== restored.manifestHash) fail('STALE_PLAN', '计划清单或备份报告已改变');
     const first = compiled.selectedSources[0];
@@ -146,7 +147,7 @@ export async function executeCompiledMigration(current, input, { verify = native
     const persist = async () => {
       const temporary = `${result.journalPath}.tmp-${randomUUID()}`;
       await writeFile(temporary, JSON.stringify(journal, null, 2), { flag: 'wx' });
-      await rename(temporary, result.journalPath);
+      await atomicRename(temporary, result.journalPath);
     };
     await writeFile(result.journalPath, JSON.stringify(journal, null, 2), { flag: 'wx' });
     const intent = async value => { journal.intents.push(value); await persist(); };

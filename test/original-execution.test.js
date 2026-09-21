@@ -60,6 +60,17 @@ test('三类记录随冻结改名同步，历史查找键可用且正文保留�
  assert.equal((await inventory(f.backup.backupPath)).hash,f.backup.baseline.hash);
 });
 
+test('未参与迁移的 Windows 历史路径格式保持原样，不造成原库与副本方案差异',{skip:process.platform!=='win32'},async t=>{
+ const historyFile=`.llm-wiki/history/${historyKey('wiki/unrelated.md')}.json`;
+ const f=await ready(t,{decorate:async({libraryPath,write})=>{
+  await mkdir(path.join(libraryPath,'.llm-wiki/history'));await write('wiki/unrelated.md','无关页面');
+  await write(historyFile,[{id:'v',path:path.join(libraryPath,'wiki/unrelated.md'),timestamp:1,author:'human',tool:'ui.write_file',content:'原有历史'}]);
+ }});
+ const before=await readFile(path.join(f.backup.originalPath,historyFile));
+ const service=createOriginalExecutionService({verify:quiet}),plan=await service.prepare(f.input);
+ assert.ok(plan.authorizationPlanPath);assert.deepEqual(await readFile(path.join(f.backup.originalPath,historyFile)),before);
+});
+
 test('历史查找键不匹配或目标键被占用时拒绝改名，所有文件保持基线',async t=>{
  for(const kind of ['mismatch','collision'])await t.test(kind,async t=>{
   const f=await migrationFixture(t,{decorate:async({libraryPath,write})=>{

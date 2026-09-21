@@ -37,6 +37,57 @@ async function reviewed(value,{evolve=false}={}) {
  const slice={sliceId:'slice-one',...await strategy.prepare({batch,selected:[source],planning})};return {source,slice};
 }
 
+test('批次 HTTP 批量推荐分类时可查询当前阶段，结果仅待审核且不会重复推荐',async t=>{
+ const value=await fixture(t),{f,batch:input}=value;
+ let batch,call,seen=[];
+ const planning=createPlanningService({stateDirectory:path.join(f.root,'classify-planning'),generate:async(_,request)=>{
+  if(request.stage.startsWith('category-')){
+   const live=await call('get',{batchId:batch.batchId});
+   assert.equal(live.phase,'classification-running');assert.equal(live.interrupted,false);
+   seen.push(live.flow.classificationCurrent.stage);
+   assert.equal(live.classificationProgress.remaining,1);
+  }
+  if(request.stage==='category-search')return {candidates:['001 缓存']};
+  if(request.stage==='category-choice')return {category:'001 缓存',reason:'缓存主题',evidence:[request.content.evidence[0]],uncertain:false};
+  return {title:'缓存一致性',summary:'缓存主题',evidence:[request.content.slice(0,10)],uncertain:false};
+ }});
+ const server=createApp({batches:createBatchService({stateDirectory:path.join(f.root,'classify-batches'),planning,strategies:{inbox:value.strategy}})});
+ await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(base+'/api/session')).json();
+ call=async(action,input)=>{const response=await fetch(base+'/api/batches/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)});const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));return result;};
+ batch=await call('create',{...input,mode:'inbox'});
+ batch=await call('analyzeNext',{batchId:batch.batchId,revision:batch.revision});
+ batch=await call('reviewItem',{batchId:batch.batchId,revision:batch.revision,sourceId:batch.sources[0].sourceId,action:'confirmName',name:'缓存一致性.md'});
+ batch=await call('classifyNext',{batchId:batch.batchId,revision:batch.revision});
+ assert.deepEqual(seen,['search','choice']);assert.equal(batch.classificationProgress.remaining,0);assert.equal(batch.classificationProgress.completed,1);
+ assert.equal(batch.sources[0].classification.category,'001 缓存');assert.equal(batch.sources[0].status,'classified');assert.equal(batch.sources[0].selected,false);
+ assert.equal(batch.flow.classificationCurrent.status,'complete');
+ batch=await call('classifyNext',{batchId:batch.batchId,revision:batch.revision});assert.equal(seen.length,2);
+ assert.equal(await readFile(path.join(input.sourceRoot,'录屏.md'),'utf8'),value.text);
+});
+
+test('分析中公开读取分段进度，重分析仅处理指定的信息不足材料且不复用旧结果',async t=>{
+ const value=await fixture(t),{batch:input,f}=value;
+ let service,initial,calls=0,uncertain=true,observed=false;
+ const planning=createPlanningService({stateDirectory:path.join(f.root,'progress-planning'),generate:async(_,request)=>{
+  calls++;
+  const live=await service.get({batchId:initial.batchId});
+  assert.equal(live.phase,'analysis-running');assert.equal(live.interrupted,false);
+  assert.equal(live.flow.analysisCurrent.stage,'segment');
+  assert.equal(live.flow.analysisCurrent.step,1);assert.equal(live.flow.analysisCurrent.totalSteps,1);
+  assert.ok(live.flow.analysisCurrent.startedAt);observed=true;
+  return {title:'缓存一致性',summary:'缓存主题',evidence:[request.content.slice(0,10)],uncertain};
+ }});
+ service=createBatchService({stateDirectory:path.join(f.root,'progress-batches'),strategies:{inbox:value.strategy},planning});
+ initial=await service.create({...input,mode:'inbox'});
+ let result=await service.analyzeNext({batchId:initial.batchId,revision:initial.revision});
+ assert.ok(observed);assert.equal(result.sources[0].status,'needs-information');assert.equal(result.flow.analysisCurrent.status,'complete');
+ uncertain=false;
+ result=await service.analyzeNext({batchId:result.batchId,revision:result.revision,sourceId:result.sources[0].sourceId,retryUncertain:true,limit:1});
+ assert.equal(calls,2);assert.equal(result.sources[0].status,'analyzed');assert.equal(result.sources[0].suggestion,'缓存一致性.md');
+ assert.equal(await readFile(path.join(input.sourceRoot,'录屏.md'),'utf8'),value.text);
+});
+
 for(const autoIngest of [true,false])test(`Inbox新材料按分析/名字/分类/归档推进，首次摄取开关=${autoIngest}且重启不重复归档`,async t=>{
  const value=await fixture(t,{autoIngest}),{batch,strategy,planning,calls,text}=value;
  const cacheBefore=await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-cache.json'),'utf8'),queueBefore=await readFile(path.join(batch.libraryPath,'.llm-wiki/ingest-queue.json'),'utf8');

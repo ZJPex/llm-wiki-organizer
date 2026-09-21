@@ -37,6 +37,15 @@ function checkedAnalysis(result, text) {
   return { title: result.title, summary: result.summary, evidence: result.evidence, uncertain: result.uncertain !== false || !result.evidence.length };
 }
 
+async function generateCheckedAnalysis(generate, config, request, content) {
+  const run = input => generate(config, input).then(result => checkedAnalysis(result, content));
+  try { return await run(request); }
+  catch (error) {
+    if (error.message !== '模型分析缺少可核验的原文证据') throw error;
+    return run({ ...request, evidenceRequirement: 'evidence 每一项必须是 content 中的连续精确子串，逐字符保留原标点与空白；不能精确引用时返回空数组并将 uncertain 设为 true。' });
+  }
+}
+
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
@@ -75,7 +84,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const sourceHash = hash(text);
       const saved = await state(sourceRoot, input.libraryPath);
       const prior = saved.data.entries[identity];
-      if (prior?.hash === sourceHash) return { ...prior, reused: true };
+      if (prior?.hash === sourceHash && !input.reanalyze) return { ...prior, reused: true };
       const view = analysisView(text);
       const kind = kindOf(view);
       const seriesPattern = /第[零一二三四五六七八九十百千0-9]+[章节课讲]|(?:chapter|lesson|part)\s*\d+/gi;
@@ -86,18 +95,22 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
         const config = await readModelConfig(input);
         const size = Math.max(256, Math.min(8000, Math.floor((config.maxContextSize ?? 16000) / 4)));
         for (let start = 0; start < view.length; start += size) {
+          await input.onProgress?.({stage:'segment',step:Math.floor(start/size)+1,totalSteps:Math.ceil(view.length/size)});
           const content = view.slice(start, start + size);
-          entry.segments.push({ start, end: Math.min(start + size, view.length), ...checkedAnalysis(await generate(config, { stage: 'segment', content, identity }), content) });
+          entry.segments.push({ start, end: Math.min(start + size, view.length), ...await generateCheckedAnalysis(generate, config, { stage: 'segment', content, identity }, content) });
         }
         // 分层归并使每一段均参与，避免把超长全文再次塞入一个上下文。
-        let summaries = entry.segments;
+        let summaries = entry.segments, round = 0;
         while (summaries.length > 1) {
+          round++;
           const next = [];
           for (let offset = 0; offset < summaries.length; offset += 4) {
+            await input.onProgress?.({stage:'synthesis',round,step:Math.floor(offset/4)+1,totalSteps:Math.ceil(summaries.length/4)});
             const group = summaries.slice(offset, offset + 4);
             const content = group.map(s => `${s.summary}\n${s.evidence.join('\n')}`).join('\n');
-            const result = checkedAnalysis(await generate(config, { stage: 'synthesis', content, identity }), content);
-            next.push({ ...result, uncertain: result.uncertain || group.some(s => s.uncertain) });
+            const result = await generateCheckedAnalysis(generate, config, { stage: 'synthesis', content, identity }, content);
+            // 全文主题由汇总独立判断，局部歧义不作为全篇否决票。
+            next.push(result);
           }
           summaries = next;
         }
@@ -137,7 +150,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
-      const recommendation = await recommendCategory({ entry, catalog, config, generate });
+      const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
       entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName) };
       delete entry.frozenPlan;

@@ -42,7 +42,10 @@ export async function relocateRecord(file, bytes, {originalPath, originalAliases
     const root = roots.find(root => same(absolute) === same(root) || same(absolute).startsWith(same(root)+'/'));
     if (!root) fail(`历史记录路径位于原库之外：${file}`);
     const relative=absolute.slice(root.length).replace(/^\//,'');
-    return target + (relative ? '/'+(pathMoves.get(relative)??relative) : '');
+    const next=pathMoves.get(relative)??relative;
+    // 同库迁移未涉及该路径时保留原有斜杠格式，避免只在原库产生额外写入。
+    if(same(target)===same(root)&&next===relative)return value;
+    return target + (relative ? '/'+next : '');
   }
   const field = async (row, view, name) => { if (row[name] !== undefined) {row[name] = await location(row[name]);view[name]='';} };
   const list = async (row, view, name) => {

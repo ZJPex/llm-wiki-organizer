@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { categoryCatalog, planDigest } from './categories.js';
 import { compileEvolution } from './evolution.js';
@@ -78,6 +78,26 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
     if (Array.isArray(entry?.filesWritten)) entry.filesWritten = await Promise.all(entry.filesWritten.map(async value =>
       typeof value === 'string' && (path.isAbsolute(value) || path.win32.isAbsolute(value)) ? await canonicalPath(value) : value));
   }
+  // 仅将 Windows 实际指向同一文件的别名映射到清单原名；不改写未移动的缓存记录。
+  const outputAliases = new Map(), foldedFiles = new Map();
+  if (process.platform === 'win32') {
+    for (const file of baseline.files) {
+      const matches = foldedFiles.get(key(file.path)) ?? [];
+      matches.push(file.path); foldedFiles.set(key(file.path), matches);
+    }
+    for (const entry of Object.values(originalCache.entries ?? {})) for (const value of entry?.filesWritten ?? []) {
+      let relative;
+      try { relative = outputPath(root, value); } catch { continue; }
+      if (files.has(relative) || outputAliases.has(relative)) continue;
+      const matches = foldedFiles.get(key(relative));
+      if (matches?.length !== 1) continue;
+      try {
+        const [alias, actual] = await Promise.all([stat(path.join(root, relative)), stat(path.join(root, matches[0]))]);
+        if (alias.isFile() && alias.dev === actual.dev && alias.ino === actual.ino) outputAliases.set(relative, matches[0]);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+  const resolveOutput = value => { const relative = outputPath(root, value); return outputAliases.get(relative) ?? relative; };
   const documents = await Promise.all(baseline.files.filter(file => /\.md$/i.test(file.path)).map(async file => { const text = await readFile(path.join(root, file.path), 'utf8'); return { path: file.path, text, frontmatter: sourceFrontmatter(text) }; }));
   const dependencies = [];
   const block = (item, code, message) => { if (item.status === 'pending') { item.status = 'blocked'; item.reason = { code, message }; } };
@@ -91,9 +111,9 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
       if (item.passive) { if (originalCache.entries[identity]) fail('UNSUPPORTED_SOURCE', '随目录移动的非 Markdown 材料已有摄取记录'); continue; }
       const entry = originalCache.entries[identity];
       if (!entry || entry.hash !== files.get(item.from).hash || !Array.isArray(entry.filesWritten) || !entry.filesWritten.length) fail('SOURCE_CHANGED', '源未摄取、内容已变化或关联缺失');
-      const outputs = entry.filesWritten.map(value => outputPath(root, value));
+      const outputs = entry.filesWritten.map(resolveOutput);
       if (outputs.some(file => !files.has(file) || !file.startsWith('wiki/') || !/\.md$/i.test(file))) fail('UNKNOWN_ASSOCIATION', '缓存产出缺失或类型未知');
-      const shared = await adapters.analyzeShared({ cache: originalCache, oldIdentity: identity, outputs, files, relativeOutput: value => outputPath(root, value) });
+      const shared = await adapters.analyzeShared({ cache: originalCache, oldIdentity: identity, outputs, files, relativeOutput: resolveOutput });
       const candidates = summaryCandidates(identity).map(slug => `wiki/sources/${slug}.md`).filter(file => files.has(file));
       if (candidates.length !== 1 || !outputs.includes(candidates[0])) fail('UNKNOWN_SUMMARY', '摘要缺失、歧义或未关联');
       item.source = { identity, next, outputs, shared, summaryFrom: candidates[0], summaryTo: `wiki/sources/${summaryCandidates(next)[0]}.md` };
@@ -151,14 +171,16 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
         if (!affectedPages.includes(item.source.summaryFrom)) fail('MISSING_SOURCE_REFERENCE', '本源摘要缺少可确定的 sources 引用', { affectedItemIds: [item.id] });
         for (const file of item.source.outputs.filter(file => !affectedPages.includes(file))) {
           const references = documents.find(document => document.path === file)?.frontmatter.sources;
+          // 上游全库索引和摄取日志没有来源 frontmatter；仍交给后续链接扫描检查与修复。
+          if (['wiki/index.md', 'wiki/log.md'].includes(file) && references?.length === 0) continue;
           if (!references?.length || references.some(source => {
             const identity = source.replace(/^raw\/sources\//, '');
             const entry = originalCache.entries[identity];
             return !entry || files.get(`raw/sources/${identity}`)?.hash !== entry.hash;
-          })) fail('MISSING_SOURCE_REFERENCE', '共享缓存产出缺少可验证的其他来源', { affectedItemIds: [item.id] });
+          })) fail('MISSING_SOURCE_REFERENCE', `共享缓存产出缺少可验证的其他来源：${file}`, { affectedItemIds: [item.id] });
         }
       }
-      const links = await adapters.analyzeLinks({ root, baseline, documents, moves, changes, affectedPages });
+      const links = await adapters.analyzeLinks({ root, baseline, documents, moves, changes, affectedPages, resolutions: input.linkResolutions });
       const uncachedReferences = [];
       for (const [file, text] of changes) if (file.startsWith('raw/sources/') && /\.md$/i.test(file)) {
         const existing = cache.entries[file.slice(12)];
@@ -171,11 +193,13 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
       const recordMoves=[];
       for (const file of baseline.files.filter(file => file.path.startsWith('.llm-wiki/') && !known.has(file.path))) {
         if(dormantState(file.path))continue;
+        // 上游 backupExistingPage 保存的是合并前正文，不是活动关联；保留历史快照字节与名称。
+        if(/^\.llm-wiki\/page-history\/wiki_[^/]+\.md-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(file.path))continue;
         const bytes=await readFile(path.join(root,file.path));
         const record=recordKind(file.path)?await relocateRecord(file.path,bytes,{originalPath:root,validationPath:root,pathMoves:moveLookup}):null;
         const text = record?record.scanBytes.toString('utf8'):bytes.toString('utf8');
         const affected = sourceItems.filter(item => [item.source.identity, item.source.summaryFrom, path.posix.basename(item.source.summaryFrom)].some(value => text.includes(value)));
-        if (affected.length) fail('UNKNOWN_STATE_REFERENCE', '未知状态引用了受影响材料', { affectedItemIds: affected.map(item => item.id) });
+        if (affected.length) fail('UNKNOWN_STATE_REFERENCE', `未知状态引用了受影响材料：${file.path}`, { affectedItemIds: affected.map(item => item.id) });
         if(record){
           if(!record.bytes.equals(bytes))changes.set(file.path,record.bytes.toString('utf8'));
           if(record.destinationFile!==file.path){const owner=moves.find(move=>move.from===record.sourceRelative);recordMoves.push({from:file.path,to:record.destinationFile,kind:'history',itemId:owner?.itemId});}
@@ -201,7 +225,7 @@ export async function compileBatchPlan(input, backup, baseline, adapters) {
         const nextIdentity = sourceByIdentity.get(identity) ?? identity;
         if (Object.hasOwn(nextEntries, nextIdentity)) fail('TARGET_EXISTS', '最终缓存身份冲突');
         let touched = identity !== nextIdentity;
-        const filesWritten = entry.filesWritten.map(value => { const relative = outputPath(root, value), next = moveLookup.get(relative); if (!next) return value; touched = true; return path.isAbsolute(value) || path.win32.isAbsolute(value) ? `${root.replaceAll('\\', '/')}/${next}` : next; });
+        const filesWritten = entry.filesWritten.map(value => { const relative = resolveOutput(value), next = moveLookup.get(relative); if (!next) return value; touched = true; return path.isAbsolute(value) || path.win32.isAbsolute(value) ? `${root.replaceAll('\\', '/')}/${next}` : next; });
         nextEntries[nextIdentity] = { ...entry, filesWritten }; if (touched) updatedCaches.push(nextIdentity);
       }
       cache.entries = nextEntries; changes.set('.llm-wiki/ingest-cache.json', JSON.stringify(cache, null, 2));
