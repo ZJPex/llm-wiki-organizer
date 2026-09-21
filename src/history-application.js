@@ -12,7 +12,7 @@ export function historyApplicationView(batch){
 }
 export function createHistoryApplication({store,view,checkIdle,fresh,original,strategy,reconcile}){
  const save=async batch=>Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));
- async function get(input){const batch=await store.get(input.batchId),answer=view(batch,input),job=batch.flow.historyApplication;if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});answer.historyApplication.groups=actual.executionGroups??[];answer.historyApplication.phase=actual.phase??job.phase;answer.historyApplication.journalPath=actual.journalPath;}return answer;}
+ async function get(input){const batch=await store.get(input.batchId),answer=view(batch,input),job=batch.flow.historyApplication;if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});answer.historyApplication.groups=actual.executionGroups??[];answer.historyApplication.phase=actual.phase??job.phase;answer.historyApplication.journalPath=actual.journalPath;answer.historyApplication.observedHistory={status:actual.status,phase:actual.phase,interrupted:actual.interrupted??false,items:actual.items?.map(item=>({id:item.id,from:item.from,to:item.to,status:item.status})),error:actual.error??null};}return answer;}
  async function run(batch,release){const job=batch.flow.historyApplication,validation=batch.flow.historyValidation,slice=batch.slices.find(value=>value.sliceId===validation.sliceId);
  try{
   job.phase='preparing-authorization';await save(batch);
