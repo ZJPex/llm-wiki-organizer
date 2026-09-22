@@ -8,6 +8,7 @@ import {categoryCatalog,planDigest} from './categories.js';
 import {validateName} from './planning.js';
 import {inventory} from './compatibility.js';
 import {localReferences} from './links.js';
+import {selectedEvolution,sourceDirectoryDependency} from './directory-dependencies.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
@@ -86,15 +87,28 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       await checkedFile(source.currentPath,source.hash);
       if(source.ingestStatus==='uncertain'||!source.analysis||source.analysis.uncertain||!['body','navigation'].includes(source.kind))fail('INSUFFICIENT_EVIDENCE','来源关联或内容证据不足，保持原处');
       const base=inputFor(batch,source);
+      if(input.action==='discardEvolution'){
+        if(!source.evolution)fail('EVOLUTION_REQUIRED','该材料没有待修正的目录调整');
+        if(batch.flow.evolutionPlan&&input.discardShared!==true)fail('SHARED_EVOLUTION_REVIEW_REQUIRED','撤销已冻结的共享目录方案需明确确认整份撤销和关联材料重审');
+        await planning.discardEvolution(base);
+        return {sourcePatch:{evolution:null,status:'classified',selected:false,targetPath:null,frozenPlan:null},flowPatch:{evolutionPlan:null},discardedEvolutionHash:batch.flow.evolutionPlan?.planHash};
+      }
       if(input.action==='confirmPlan') {
-        if(batch.flow.evolutionPlan||batch.sources.some(item=>item.evolution?.operations?.length))fail('EVOLUTION_REVIEW_REQUIRED','目录调整尚未解决，请先处理目录依赖');
+        const dependent=sourceDirectoryDependency(batch,source,path.resolve(base.categoryRoot,input.category??'',input.name??''));
+        if(dependent){
+          if(!batch.flow.evolutionPlan||(source.evolution?.operations?.length&&source.evolution.status!=='confirmed'))fail('EVOLUTION_REVIEW_REQUIRED','该材料涉及目录调整，请先确认或修正完整目录方案');
+          if(source.confirmedName&&source.confirmedName!==input.name)fail('NAME_REQUIRED','已确认名称保持稳定');
+          const result=await this.review({batch,source:{...source,confirmedName:input.name},input:{action:'confirmCategory',category:input.category},planning});
+          const named=await planning.confirm({...base,name:input.name});
+          return {sourcePatch:{...named,...result.sourcePatch,manuallyEdited:input.manuallyEdited===true}};
+        }
         const entry=await planning.confirmPlan({...base,name:input.name,category:input.category});
         return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true,manuallyEdited:input.manuallyEdited===true}};
       }
       if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
       if(input.action==='confirmName') {
         const entry=await planning.confirm({...base,name:input.name});
-        return {sourcePatch:{...entry,status:'named',selected:false,targetPath:null}};
+        return {sourcePatch:{...entry,classification:entry.classification??null,frozenPlan:null,status:'named',selected:false,targetPath:null}};
       }
       if(!source.confirmedName)fail('NAME_REQUIRED','先确认文件名，再查找分类');
 
@@ -108,7 +122,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         return {sourcePatch:{evolution,status:'classified',selected:false},flowPatch:{evolutionPlan:evolution.frozenPlan}};
       }
       if(input.action==='confirmCategory') {
-        const evolution=batch.flow.evolutionPlan;
+        const evolution=sourceDirectoryDependency(batch,source,path.resolve(base.categoryRoot,input.category??'',source.confirmedName))?batch.flow.evolutionPlan:null;
         if(evolution) {
           const {planHash,...unsigned}=evolution;if(planHash!==planDigest(unsigned))fail('INVALID_EVOLUTION','目录演化计划损坏');
           const catalog=await categoryCatalog(base.categoryRoot);
@@ -119,7 +133,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
           const targetPath=path.join(base.categoryRoot,input.category,source.confirmedName);
           await checkTarget(base.categoryRoot,targetPath,source.currentPath);
           const frozen={sourceHash:source.hash,name:source.confirmedName,category:input.category,finalPath:targetPath,catalogHash:catalog.hash,evolutionHash:evolution.planHash};
-          return {sourcePatch:{targetPath,frozenPlan:{...frozen,planHash:planDigest(frozen)},status:'reviewed',selected:true}};
+          return {sourcePatch:{targetPath,classification:{...source.classification,category:input.category,finalPath:targetPath,status:'confirmed'},frozenPlan:{...frozen,planHash:planDigest(frozen)},status:'reviewed',selected:true}};
         }
         const entry=await planning.confirmCategory({...base,category:input.category});
         return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true}};
@@ -128,7 +142,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
     },
     async prepare({batch,selected}) {
       const discovered=await currentSources(batch),categoryRoot=path.join(batch.libraryPath,'raw/sources');
-      const evolution=batch.flow.evolutionPlan,mappings=[],newFiles=[],destinations=new Set();
+      const evolution=selectedEvolution(batch,selected),mappings=[],newFiles=[],destinations=new Set();
       for(const source of selected) {
         const current=discovered.find(value=>key(value.currentPath)===key(source.currentPath));
         if(!current||current.hash!==source.hash)fail('STALE_SOURCE','来源记录已变化');

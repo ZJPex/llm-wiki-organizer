@@ -38,7 +38,7 @@ test('同正文新审核版本撤销旧选择且保留手动名称',()=>{
 test('目录演化成员关联变化完整阻断依赖组，独立新增审核仍有效',async t=>{
  const {createBatchStore}=await import('../src/batch-store.js');const f=await historyFixture(t,{mixed:true}),b=f.getBatch(),store=createBatchStore({stateDirectory:f.stateDirectory});
  await store.update(b.batchId,b.revision,record=>{record.flow.evolutionPlan={planHash:'test-directory-plan',fileMappings:record.sources.filter(s=>s.ingestStatus==='historical').map(s=>({from:s.identity,to:'001 缓存/'+s.confirmedName}))};return record;});await f.call('get');
- await writeFile(path.join(f.libraryPath,'wiki/sources/old.md'),'---\nsources: ["old.md"]\n---\n变更关联');const refreshed=await f.call('refreshReview');assert.equal(refreshed.sources.find(s=>s.identity==='new.md').status,'reviewed');assert.ok(refreshed.sources.filter(s=>s.ingestStatus==='historical').every(s=>!s.selected));assert.ok(refreshed.historyPlan.blockers.some(b=>b.code==='DIRECTORY_DEPENDENCY'));assert.ok(refreshed.invalidations.reasons.some(r=>r.scope==='directory'));assert.equal(f.modelCalls(),12);
+ await writeFile(path.join(f.libraryPath,'wiki/sources/old.md'),'---\nsources: ["old.md"]\n---\n变更关联');const refreshed=await f.call('refreshReview');assert.equal(refreshed.sources.find(s=>s.identity==='new.md').status,'reviewed');assert.ok(refreshed.sources.filter(s=>s.ingestStatus==='historical').every(s=>!s.selected));assert.equal(refreshed.historyPlan.evolutionPlanHash,null);assert.equal(refreshed.historyPlan.blockerCount,0);assert.ok(refreshed.sources.filter(s=>s.ingestStatus==='historical').every(s=>s.directoryDependency));assert.ok(refreshed.invalidations.reasons.some(r=>r.scope==='directory'));assert.equal(f.modelCalls(),12);
 });
 
 test('分类重荐更新分类草稿但保留手改名称，新会话正确恢复已审核选择',()=>{

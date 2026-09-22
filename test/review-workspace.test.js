@@ -50,9 +50,9 @@ test('先打开待分析任务：新建议同步非手动草稿，分页刷新�
  restored.selected=false;assert.equal(reconcileReviewDraft(reviewed,restored).selected,false);
 });
 
-test('集中接受阻断目录演化，保留已排除材料与历史调整待处理范围',async t=>{
+test('无实际目录操作的确认不阻断集中接受，已排除材料继续保留',async t=>{
  const {inboxConfirmationFixture}=await import('./helpers/inbox-confirmation-fixture.js');const f=await inboxConfirmationFixture(t);
  const source=f.getBatch().sources.find(s=>s.identity==='a.md');await f.call('reviewItem',{sourceId:source.sourceId,action:'evolve',category:'001 缓存'});await f.call('reviewItem',{sourceId:source.sourceId,action:'confirmEvolution'});
- await assert.rejects(f.call('confirmPlans',{items:[{sourceId:source.sourceId,name:'a.md',category:'001 缓存'}]}),/目录调整/);
- const state=await f.call('get');assert.equal(state.sources.find(s=>s.identity==='excluded.md').status,'excluded');assert.equal(state.sources.find(s=>s.sourceId===source.sourceId).selected,false);
+ await f.call('confirmPlans',{items:[{sourceId:source.sourceId,name:'a.md',category:'001 缓存'}]});
+ const state=await f.call('get');assert.equal(state.sources.find(s=>s.identity==='excluded.md').status,'excluded');assert.equal(state.sources.find(s=>s.sourceId===source.sourceId).selected,true);
 });

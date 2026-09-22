@@ -44,9 +44,9 @@ test('历史关联不能进入新增直通，整次请求保持无写入',async 
  await lstat(path.join(f.sourceRoot,'a.md'));await lstat(path.join(f.sourceRoot,'old.md'));await assert.rejects(lstat(path.join(f.sourceRoot,'new.md')),{code:'ENOENT'});
 });
 test('目录依赖阻断新增直通；用户排除项仍保留',async t=>{
- const {inboxConfirmationFixture}=await import('./helpers/inbox-confirmation-fixture.js');const f=await inboxConfirmationFixture(t),source=f.getBatch().sources.find(s=>s.identity==='a.md');
+ const {inboxConfirmationFixture}=await import('./helpers/inbox-confirmation-fixture.js');const f=await inboxConfirmationFixture(t,{operations:[{type:'add',parent:'001 缓存',label:'新增主题',files:[],problem:'主题需细分',benefit:'按主题查找'}]}),source=f.getBatch().sources.find(s=>s.identity==='a.md');
  await f.call('reviewItem',{sourceId:source.sourceId,action:'evolve',category:'001 缓存'});await f.call('reviewItem',{sourceId:source.sourceId,action:'confirmEvolution'});
- await assert.rejects(f.call('confirmNewArchive',{requestId:'directory',writersPaused:true,items:[{sourceId:source.sourceId,name:'a.md',category:'001 缓存'}]}),/目录调整/);
+ const result=await f.call('confirmNewArchive',{requestId:'directory',writersPaused:true,items:[{sourceId:source.sourceId,name:'a.md',category:'001 缓存'}]});assert.equal(result.flow.newArchive.counts.retained,1);assert.match(result.flow.newArchive.items[0].reason.message,/目录调整/);
  await lstat(path.join(f.sourceRoot,'a.md'));await lstat(path.join(f.sourceRoot,'excluded.md'));
 });
 test('复制后失败保留来源、目标和日志，重复确认只查询证据',async t=>{

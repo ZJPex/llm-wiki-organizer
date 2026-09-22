@@ -15,7 +15,7 @@ async function fixture(t,count){
  const root=await mkdtemp(path.join(os.tmpdir(),'tree-progress-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const sourceRoot=path.join(root,'sources');await mkdir(sourceRoot);
  const configPath=path.join(root,'config.json');await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test'}}));
- const sources=[];for(let i=0;i<count;i++){const currentPath=path.join(sourceRoot,`${i}.md`);await writeFile(currentPath,'主题材料');sources.push({sourceId:String(i),currentPath,hash:digest('主题材料'),status:'analyzed',analysis:{analysis:{summary:'主题材料',evidence:['主题材料'],uncertain:false}}});}
+ const sources=[];for(let i=0;i<count;i++){const currentPath=path.join(sourceRoot,`${i}.md`);await writeFile(currentPath,'主题材料');sources.push({sourceId:String(i),identity:`${i}.md`,currentIdentity:`${i}.md`,currentPath,hash:digest('主题材料'),status:'analyzed',analysis:{analysis:{summary:'主题材料',evidence:['主题材料'],uncertain:false}}});}
  return {libraryPath:root,sourceRoot,configPath,sources,flow:{}};
 }
 const unchanged=request=>({categories:request.categories.map(node=>({segments:node.segments,groups:[node.groupId],reason:'保留主题'}))});

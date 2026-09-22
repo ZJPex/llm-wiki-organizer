@@ -1,3 +1,4 @@
+import {executionBlock} from './execution-state.js';
 import path from 'node:path';
 import {lstat,readFile} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -13,9 +14,9 @@ export function recordTreeInvalidation(batch){
  batch.flow.invalidations={revision:(batch.flow.invalidations?.revision??0)+1,checkedAt:new Date().toISOString(),affectedSourceIds:sources.map(source=>source.sourceId),retainedReviewCount:batch.sources.filter(source=>source.status==='reviewed').length,analysisRetainedCount:batch.sources.filter(source=>source.analysis).length,sharedValidationStale:staleValidation(batch,'分类树版本已变化'),reasons:[{code:'TREE_REVISION_CHANGED',scope:'tree',sourceIds:sources.map(source=>source.sourceId),message:'分类树版本变化使全树文件归属需要重审，未变正文分析仍有效',nextAction:'tree'}]};
 }
 export function assertReviewRefreshAllowed(batch){
- const application=batch.flow.historyApplication;
- if(application&&application.status!=='complete'&&application.status!=='failed')batchFail('EXECUTION_INTERRUPTED','已有执行中或结果不确定的原库授权，只能先查询日志或恢复，不能把材料回退重审');
- if(batch.slices.some(slice=>slice.status==='applying'||(slice.status!=='complete'&&(slice.originalResultPath||slice.originalJournalPath||slice.archiveResult))))batchFail('EXECUTION_INTERRUPTED','已有未完成写入现场，请先查询或恢复；不得通过重审重复移动');
+ const blocked=executionBlock(batch,'refresh');
+ if(blocked==='application')batchFail('EXECUTION_INTERRUPTED','已有执行中或结果不确定的原库授权，只能先查询日志或恢复，不能把材料回退重审');
+ if(blocked==='slice')batchFail('EXECUTION_INTERRUPTED','已有未完成写入现场，请先查询或恢复；不得通过重审重复移动');
 }
 export function invalidationView(batch,{cursor=0,limit=25}={}){
  const record=batch.flow.invalidations;if(!record)return {invalidations:null};const offset=Math.max(0,Number(cursor)||0),size=Math.max(1,Math.min(50,Number(limit)||25));
