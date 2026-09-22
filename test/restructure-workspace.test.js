@@ -10,6 +10,7 @@ import {createPlanningService} from '../src/planning.js';
 import {createRestructureStrategy} from '../src/restructure.js';
 import {createBackup} from '../src/backup.js';
 import {createMigrationService} from '../src/migration.js';
+import {createOriginalExecutionService} from '../src/original-execution.js';
 import {createRecoveryService} from '../src/recovery.js';
 import {UPSTREAM_COMMIT} from '../src/migration-verifier.js';
 import {inventory,preflight,digest} from '../src/compatibility.js';
@@ -26,7 +27,7 @@ export async function restructureWorkspaceFixture(t,{count=3}={}){
  const modelCalls=[];const generate=async(_,request)=>{modelCalls.push(request.stage);if(request.stage==='tree-proposal')return {categories:[{segments:['数据库'],members:request.materials.map(s=>s.sourceId),representatives:[request.materials[0].sourceId],reason:'按数据库主题集中查找'}]};if(request.stage==='tree-merge')return {categories:[{segments:['数据库'],groups:request.categories.map(s=>s.groupId),reason:'合并共同主题'}]};return {title:request.identity.replace('.md','')+' 查询分析',summary:request.content,evidence:[request.content],uncertain:false};};
  const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
  const planning=createPlanningService({stateDirectory:path.join(f.root,'planning'),generate});
- const server=createApp({batches:createBatchService({stateDirectory:path.join(f.root,'batches'),planning,strategies:{restructure:createRestructureStrategy({generate})},backup:input=>createBackup(input,{inspect:input=>preflight(input,{sourceManifest:{version:'0.6.11',commit:UPSTREAM_COMMIT,files:{fixture:digest('verified-test-format')}}})}),migration:createMigrationService({verify:quiet}),recovery:createRecoveryService({verify:quiet})})});
+ const server=createApp({batches:createBatchService({stateDirectory:path.join(f.root,'batches'),planning,strategies:{restructure:createRestructureStrategy({generate})},backup:input=>createBackup(input,{inspect:input=>preflight(input,{sourceManifest:{version:'0.6.11',commit:UPSTREAM_COMMIT,files:{fixture:digest('verified-test-format')}}})}),migration:createMigrationService({executionGroupSize:1,verify:quiet}),recovery:createRecoveryService({verify:quiet}),original:createOriginalExecutionService({verify:quiet})})});
  await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(base+'/api/session')).json();let batch;
  const call=async(action,extra={},expected=200)=>{const response=await fetch(base+'/api/batches/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({batchId:batch?.batchId,revision:batch?.revision,...extra})});const value=await response.json();assert.equal(response.status,expected,JSON.stringify(value));if(expected===200)batch=value;return value;};
  await call('create',{mode:'restructure',libraryPath,sourceRoot,wikiSourcePath,artifactRoot,configPath});
@@ -50,4 +51,13 @@ test('树草稿绑定来源及树版本，刷新保留手改而新树清除陈�
 
 test('跨来源分页的全量方案一次确认可超过旧 16 KiB 限制',async t=>{
  const f=await restructureWorkspaceFixture(t,{count:52});await f.call('startAnalysis');await f.wait(b=>b.analysisJob.status==='complete');assert.notEqual(f.batch().nextCursor,null);await f.call('treeAction',{action:'approve'});const first=await f.call('get',{limit:50}),second=await f.call('get',{cursor:first.nextCursor,limit:50});const sources=[...first.sources,...second.sources];const items=sources.filter(s=>s.status==='analyzed').map((s,index)=>({sourceId:s.sourceId,nodeId:s.proposedNodeId,name:'数据库知识主题'.repeat(12)+index+'.md'}));assert.equal(items.length,52);assert.ok(Buffer.byteLength(JSON.stringify({items}))>16384);await f.call('confirmPlans',{treeRevision:first.flow.tree.revision,items,replaceSelection:true});assert.equal(f.batch().historyPlan.selectedCount,52);assert.equal(f.batch().counts.reviewed,52);assert.equal(f.batch().counts.skipped,1);
+});
+
+
+test('三次实质确认完成首次重构，多执行分组不追加文件审核或授权',async t=>{
+ const f=await restructureWorkspaceFixture(t);await f.call('startAnalysis');await f.wait(b=>b.analysisJob.status==='complete');let confirmations=0;
+ await f.call('treeAction',{action:'approve'});confirmations++;const items=f.batch().sources.filter(s=>s.status==='analyzed').map(s=>({sourceId:s.sourceId,name:s.analysis.suggestion,nodeId:s.proposedNodeId}));
+ await f.call('confirmPlans',{treeRevision:f.batch().flow.tree.revision,items,replaceSelection:true});confirmations++;const planHash=f.batch().historyPlan.planHash;await f.call('startHistoryValidation',{planHash,writersPaused:true});await f.wait(b=>b.historyValidation?.status!=='running');assert.equal(f.batch().historyValidation.status,'awaiting-apply');const modelCount=f.modelCalls.length;
+ const authorization={planHash,evidenceDigest:f.batch().historyValidation.evidenceDigest,writersPaused:true,approved:true};await f.call('applyHistoryPlan',authorization);confirmations++;await f.wait(b=>b.historyApplication?.status!=='running');const result=f.batch();assert.equal(result.historyApplication.status,'complete',JSON.stringify(result.historyApplication));assert.equal(confirmations,3);assert.equal(result.counts.succeeded,3);assert.ok(result.historyApplication.groups.length>1);assert.ok(result.historyApplication.groups.every(g=>g.status==='verified'));assert.equal(f.modelCalls.length,modelCount);for(const source of result.sources.filter(s=>s.status==='succeeded'))assert.match(await readFile(source.currentPath,'utf8'),/数据库查询计划/);assert.equal(await readFile(path.join(f.sourceRoot,'空白.md'),'utf8'),'');assert.match(await readFile(path.join(f.libraryPath,'wiki/concept.md'),'utf8'),/保持知识正文/);
+ const after=await inventory(f.libraryPath);await f.call('applyHistoryPlan',authorization);assert.equal((await inventory(f.libraryPath)).hash,after.hash);
 });
