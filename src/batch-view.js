@@ -2,7 +2,7 @@ import {canConfirmRecommendedCategory} from './category-confirmation.js';
 const pick=(value,names)=>Object.fromEntries(names.filter(name=>value?.[name]!==undefined).map(name=>[name,value[name]]));
 const brief=value=>typeof value==='string'?value.slice(0,2000):value;
 const itemFields=['id','sourceId','identity','from','to','path','finalPath','kind','before','after','targetBefore','targetAfter','hash','status','expectedHash','passive','changeType','sourcePath','oldPath','newPath','projectId','at','code','message'];
-const sourceFields=['sourceId','identity','currentIdentity','currentPath','hash','rawIdentity','ingestStatus','status','skipReason','selected','kind','confirmedName','suggestion','warning','targetPath','category','treeRevision','analysisCalls','classificationError','categoryConfirmationError','manuallyEdited'];
+const sourceFields=['sourceId','identity','currentIdentity','currentPath','hash','rawIdentity','ingestStatus','status','skipReason','selected','kind','confirmedName','suggestion','warning','targetPath','category','treeRevision','analysisCalls','classificationError','categoryConfirmationError','manuallyEdited','reviewVersion','reviewResetCategory','reviewReasons'];
 const batchFields=['schemaVersion','batchId','revision','createdAt','updatedAt','mode','libraryPath','sourceRoot','wikiSourcePath','artifactRoot','configPath','phase','status'];
 const sliceFields=['sliceId','status','artifactDirectory','backupReportPath','planManifestPath','migrationPlanId','validationJournalPath','recoveryPlanPath','recoveryReportPath','authorizationPlanPath','originalResultPath','originalJournalPath'];
 const errorView=value=>value?{code:value.code,message:brief(value.message)}:undefined;
