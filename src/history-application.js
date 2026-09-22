@@ -12,7 +12,14 @@ export function historyApplicationView(batch){
 }
 export function createHistoryApplication({store,view,checkIdle,fresh,original,strategy,reconcile}){
  const save=async batch=>Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));
- async function get(input){const batch=await store.get(input.batchId),answer=view(batch,input),job=batch.flow.historyApplication;if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});answer.historyApplication.groups=actual.executionGroups??[];answer.historyApplication.phase=actual.phase??job.phase;answer.historyApplication.journalPath=actual.journalPath;answer.historyApplication.observedHistory={status:actual.status,phase:actual.phase,interrupted:actual.interrupted??false,items:actual.items?.map(item=>({id:item.id,from:item.from,to:item.to,status:item.status})),error:actual.error??null};}return answer;}
+ async function readSnapshot(input){
+  // 磁盘版本和内存执行权必须同时取样；后续日志读取只能丰富该快照，不能重新判定其生命周期。
+  const snapshot=await store.get(input.batchId,batch=>({batch,answer:view(batch,input)})),{batch,answer}=snapshot,job=batch.flow.historyApplication;
+  try{if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});answer.historyApplication.groups=actual.executionGroups??[];answer.historyApplication.phase=actual.phase??job.phase;answer.historyApplication.journalPath=actual.journalPath;answer.historyApplication.observedHistory={status:actual.status,phase:actual.phase,interrupted:actual.interrupted??false,items:actual.items?.map(item=>({id:item.id,from:item.from,to:item.to,status:item.status})),error:actual.error??null};}}
+  catch(error){snapshot.error=error;}
+  return snapshot;
+ }
+ async function get(input){const snapshot=await readSnapshot(input);if(snapshot.error)throw snapshot.error;return snapshot.answer;}
  async function run(batch,release){const job=batch.flow.historyApplication,validation=batch.flow.historyValidation,slice=batch.slices.find(value=>value.sliceId===validation.sliceId);
  try{
   job.phase='preparing-authorization';await save(batch);
@@ -62,5 +69,5 @@ export function createHistoryApplication({store,view,checkIdle,fresh,original,st
    await save(batch);setImmediate(()=>void run(batch,release));return view(batch);
   }catch(error){live.delete(batch.batchId);release();throw error;}
  }
- return {applyHistoryPlan,get};
+ return {applyHistoryPlan,get,readSnapshot};
 }
