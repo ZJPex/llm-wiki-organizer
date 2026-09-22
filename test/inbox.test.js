@@ -190,8 +190,8 @@ test('HTTP 新材料审核后关联变化持久失效；复制后重启不得删
   if(stage==='copied'){await call('applySlice',{sliceId,approved:true,writersPaused:true},400);await call('get');assert.equal(batch.slices[0].archiveResult.items[0].status,'copied');await new Promise(resolve=>server.close(resolve));options.strategies={inbox:createInboxStrategy()};await start();}
   const cachePath=path.join(input.libraryPath,'.llm-wiki/ingest-cache.json'),cache=JSON.parse(await readFile(cachePath,'utf8'));cache.entries['inbox/录屏.md']={hash:source.hash,timestamp:2,filesWritten:['wiki/new.md']};await writeFile(cachePath,JSON.stringify(cache));await writeFile(path.join(input.libraryPath,'wiki/new.md'),'---\nsources: ["inbox/录屏.md"]\n---\n刚完成摄取');
   await call(stage==='fresh'?'prepareSlice':'applySlice',{sliceId,approved:true,writersPaused:true},400);await call('get');
-  assert.equal(batch.error.code,stage==='fresh'?'STALE_ASSOCIATION':'ARCHIVE_FAILED');assert.equal(batch.phase,'needs-review');
-  if(stage==='fresh'){assert.equal(batch.sources[0].status,'needs-analysis');assert.equal(batch.sources[0].selected,false);}else assert.equal(batch.slices[0].archiveResult.error.code,'STALE_ASSOCIATION');
+  assert.equal(batch.error.code,stage==='fresh'?'REVIEW_INVALIDATED':'ARCHIVE_FAILED');assert.equal(batch.phase,'needs-review');
+  if(stage==='fresh'){assert.equal(batch.sources[0].status,'classified');assert.equal(batch.sources[0].ingestStatus,'historical');assert.ok(batch.sources[0].analysis);assert.equal(batch.sources[0].selected,false);}else assert.equal(batch.slices[0].archiveResult.error.code,'STALE_ASSOCIATION');
   assert.equal(await readFile(source.currentPath,'utf8'),value.text);assert.equal(JSON.parse(await readFile(cachePath,'utf8')).entries['inbox/录屏.md'].timestamp,2);
   if(stage==='copied')assert.equal(await readFile(path.join(input.libraryPath,'raw/sources/001 缓存/缓存一致性.md'),'utf8'),value.text);
  });

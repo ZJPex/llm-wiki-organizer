@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { canonicalPath } from './filesystem-paths.js';
 import { proposeEvolution, freezeEvolution } from './evolution.js';
+import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
@@ -137,7 +138,13 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const collision = (await readdir(path.dirname(file))).some(p => p.toLowerCase() === name.toLowerCase() && p !== path.basename(file));
       const duplicate = Object.values(saved.data.entries).some(e => e.identity !== identity && path.dirname(e.identity) === path.dirname(identity) && e.confirmedName?.toLowerCase() === name.toLowerCase());
       if (collision || duplicate) throw new Error('目标名称已存在，不能覆盖');
-      if (entry.confirmedName !== name) { delete entry.classification; delete entry.frozenPlan; } entry.confirmedName = name; entry.reviewRequired = false;
+      if (entry.confirmedName !== name) {
+        // 分类依据来自正文，与首次确认名字无关；只撤销路径授权并更新待审核位置。
+        const classification=entry.classification;
+        if(classification&&(await categoryCatalog(classification.catalogRoot)).hash===classification.catalogHash)entry.classification={...classification,status:'needs-review',finalPath:classification.category===null?null:path.join(classification.catalogRoot,classification.category,name)};
+        else delete entry.classification;
+        delete entry.frozenPlan;
+      } entry.confirmedName = name; entry.reviewRequired = false;
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -163,7 +170,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
       if (!entry?.classification || !entry.analysis || entry.analysis.uncertain || !['body','navigation'].includes(entry.kind) || entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('内容证据不足或源基线变化');
-      if (saved.data.evolution?.operations?.length) throw new Error('目录调整尚未解决，请先处理目录依赖');
+      if (evolutionTouches(saved.data.evolution,{sourcePath:file,targetPath:path.resolve(entry.classification.catalogRoot,input.category??'',input.name??''),categoryRoot:entry.classification.catalogRoot,owner:saved.data.evolution?.identity===entry.identity})) throw new Error('目录调整尚未解决，请先处理目录依赖');
       const name = validateName(input.name);
       if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
@@ -223,9 +230,14 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       }
       const plan = freezeEvolution(proposal, input.operations, names);
       if (input.previewOnly) return { ...proposal, preview: plan };
-      saved.data.evolution = { ...proposal, status: 'confirmed', frozenPlan: plan };
+      saved.data.evolution = { ...proposal, operations:input.operations, status: 'confirmed', frozenPlan: plan };
       await persist(saved.file, saved.data);
       return saved.data.evolution;
+    }),
+    discardEvolution: input => serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath);
+      if(saved.data.evolution&&saved.data.evolution.identity!==input.identity)throw new Error('请从提出这份目录调整的材料取消方案');
+      delete saved.data.evolution;await persist(saved.file,saved.data);
     }),
     invalidateReview: input => serial(async () => {
       const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];

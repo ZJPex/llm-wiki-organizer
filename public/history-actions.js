@@ -23,11 +23,12 @@ export function renderHistoryActions(host,{batch,writersPaused,run,refresh}){
   host.append(element('h2',labels[application.status]??application.status));
   const phaseNames={authorized:'已确认执行范围','preparing-authorization':'核对最终授权','applying-history':'迁移历史材料','archiving-new':'归档新增材料',complete:'已完成',stopped:'已停止','verified-original':'原库验证通过'};
   host.append(element('p',`执行范围 ${application.selectedCount} 份；${phaseNames[application.phase]??'正在核对执行状态'}`));
-  const groups=application.groups??[];
-  if(groups.length){const progress=element('details');progress.append(element('summary',`内部分批：${groups.filter(group=>group.status==='verified').length} / ${groups.length} 已验证（展开查看）`));for(const [index,group] of groups.entries())progress.append(element('p',`第 ${index+1} 组：${({pending:'等待',staged:'已暂存',placed:'已放置，待整体验证',verified:'整体验证通过','stage-running':'正在暂存','place-running':'正在放置'})[group.status]??group.status}`));host.append(progress);}
+  if(application.groupCount){const progress=element('details');progress.append(element('summary',`内部分批：${application.verifiedGroupCount} / ${application.groupCount} 已验证（展开查看）`));const rows=element('div');progress.append(rows);host.append(progress);
+   const draw=page=>{rows.replaceChildren();for(const [index,group] of page.groups.entries())rows.append(element('p',`第 ${page.groupCursor+index+1} 组：${({pending:'等待',staged:'已暂存',placed:'已放置，待整体验证',verified:'整体验证通过','stage-running':'正在暂存','place-running':'正在放置'})[group.status]??group.status}`));if(page.groupNextCursor!==null){const next=element('button','下一页执行组');next.onclick=async()=>{next.disabled=true;try{draw((await requestBatch('get',{batchId:batch.batchId,applicationGroupCursor:page.groupNextCursor,limit:50})).historyApplication);}catch(error){rows.append(element('p',error.message));next.disabled=false;}};rows.append(next);}};draw(application);
+  }
   if(application.error)host.append(element('p',application.error.message));
   const labelsResult={succeeded:'成功',retained:'保留','dependency-blocked':'依赖阻断',unverified:'未验证'};
-  for(const status of Object.keys(labelsResult)){const items=(application.results??[]).filter(item=>item.status===status);if(items.length)host.append(element('p',labelsResult[status]+'：'+items.length+' 份'));}
+  for(const status of Object.keys(labelsResult)){const count=application.resultCounts?.[status]??0;if(count)host.append(element('p',labelsResult[status]+'：'+count+' 份'));}
   if(application.journalPath)host.append(element('p','原库执行日志：'+application.journalPath));
   if(['interrupted','failed'].includes(application.status)){const retry=element('button','查询日志并继续合法步骤');retry.disabled=writersPaused!==true;retry.onclick=()=>run(async()=>{await requestBatch('applyHistoryPlan',{batchId:batch.batchId,revision:batch.revision,planHash:application.planHash,evidenceDigest:application.evidenceDigest,writersPaused,approved:true});await refresh();});host.append(retry);}
  }

@@ -8,7 +8,7 @@ import {createBatchService} from '../../src/batches.js';
 import {createBatchStore} from '../../src/batch-store.js';
 import {createApp} from '../../src/server.mjs';
 
-export async function inboxConfirmationFixture(t) {
+export async function inboxConfirmationFixture(t,{operations=[]}={}) {
  const f=await migrationFixture(t),libraryPath=f.backup.originalPath;
  const sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts');
  await mkdir(sourceRoot);await mkdir(artifactRoot);
@@ -20,7 +20,7 @@ export async function inboxConfirmationFixture(t) {
  const planning=createPlanningService({stateDirectory:path.join(f.root,'planning'),generate:async(_,request)=>{
   if(request.stage==='category-search')return {candidates:['','001 缓存']};
   if(request.stage==='category-choice')return {category:request.content.summary.includes('[unknown]')?null:request.content.summary.includes('[root]')?'':'001 缓存',reason:'正文主题',evidence:[request.content.evidence[0]],uncertain:false};
-  if(request.stage==='evolution')return {canContain:true,parentAffected:false,operations:[],reason:'现有分类已足够'};
+  if(request.stage==='evolution')return {canContain:!operations.length,parentAffected:false,operations,reason:'按明确范围调整'};
   return {title:'缓存主题',summary:request.content,evidence:[request.content.slice(0,12)],uncertain:false};
  }});
  const server=createApp({batches:createBatchService({stateDirectory:path.join(f.root,'batches'),planning,strategies:{inbox:createInboxStrategy()}})});
@@ -48,5 +48,5 @@ export async function inboxConfirmationFixture(t) {
   await store.update(batch.batchId,batch.revision,record=>({...record,slices:[{sliceId:'interrupted',status:'applying'}]}));
   await call('get');
  };
- return {base,sourceRoot,libraryPath,request,call,getBatch:()=>batch,interruptedExecution};
+ return {base,sourceRoot,libraryPath,root:f.root,request,call,getBatch:()=>batch,interruptedExecution};
 }

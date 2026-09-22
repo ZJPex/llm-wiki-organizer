@@ -11,6 +11,10 @@ export function reconcileReviewDraft(source,current){
  if(!(current.categoryManual??current.manual))current.category=source.classification?.category??'';
  return current;
 }
+export function reviewAnalysisActions(batch){
+ if(batch.report?.status==='needs-recovery'||batch.historyApplication&&batch.historyApplication.status!=='complete')return [];
+ return (batch.analysisJob?.allowedActions??[]).filter(action=>action!=='startAnalysis'||(batch.analysisProgress?.remaining??0)>0||(batch.classificationProgress?.remaining??0)>0);
+}
 export async function mountReviewWorkspace(host,batchId){
  let batch,rows=[],focus=null,page=0,category='',query='',status='',busy=false,paused=false;
  const unsafe=()=>batch?.report?.status==='needs-recovery'||!!batch?.historyApplication&&batch.historyApplication.status!=='complete';
@@ -47,20 +51,30 @@ export async function mountReviewWorkspace(host,batchId){
   detail.append(element('p','分类依据：'+(source.classification?.reason??'尚无建议')),element('p','原位置：'+source.currentPath));
   const d=draft(source);detail.append(element('p','最终位置：'+(source.targetPath??[batch.libraryPath,'raw/sources',d.category,d.name].filter(Boolean).join('/'))));
   for(const message of [source.warning,source.skipReason,source.categoryConfirmationError])if(message)detail.append(element('p',message));
-  if(source.evolution){detail.append(element('h3','目录调整（阻断）'));for(const op of source.evolution.operations??[])detail.append(element('p',JSON.stringify(op)));}
+  if(source.evolution){detail.append(element('h3',source.evolution.status==='confirmed'?'已冻结目录方案':'待审核目录建议'));for(const op of source.evolution.operations??[]){detail.append(element('p',`${({add:'新增分类',split:'拆分分类',merge:'合并分类',move:'移动或改名分类'})[op.type]??'目录调整'}：${op.from??op.parent??'Raw 根目录'} → ${op.to??op.label??'下列子分类'}（最终编号以冻结方案为准）`));if(op.problem)detail.append(element('p','现有问题：'+op.problem));if(op.benefit)detail.append(element('p','查找收益：'+op.benefit));for(const file of op.files??[])detail.append(element('p','涉及材料：'+file));for(const group of op.groups??[])detail.append(element('p','子分类 '+group.label+'：'+(group.files??[]).join('、')));}}
+  if(!unsafe()&&(editable(source)||source.status==='reviewed'&&source.evolution)){
+   const review=async(action,extra={})=>{await requestBatch('reviewItem',{batchId,revision:batch.revision,sourceId:source.sourceId,action,...extra});await load();};
+   if(!source.evolution)detail.append(button(source.confirmedName?'评估所填分类的目录调整':'确认此名称并评估目录调整',async()=>{if(!source.confirmedName)await review('confirmName',{name:d.name});await review('evolve',{category:d.category});}));
+   else{
+    if(source.evolution.status!=='confirmed')detail.append(button('确认这份目录调整',()=>review('confirmEvolution')));
+    const shared=!!batch.flow.evolutionPlan;
+    detail.append(element('p',shared?'撤销会解除整份共享目录方案，并要求所有相关材料重新审核。':'如现有分类可容纳，请放弃此目录建议，再填写现有分类；也可重新评估。'));
+    detail.append(button(shared?'撤销整份目录方案并重审相关材料':'放弃目录建议，改用现有分类',()=>review('discardEvolution',{discardShared:shared})));
+   }
+  }
   if(batch.flow.evolutionPlan){detail.append(element('p',`目录调整影响 ${batch.flow.evolutionPlan.affectedFileCount??0} 份历史材料，尚未解决前保留原处`));for(const item of batch.flow.evolutionPlan.fileMappings??[])detail.append(element('p',`${item.from} → ${item.to}`));}
   if(!unsafe()&&!['succeeded','excluded'].includes(source.status))detail.append(button('本项保留原处',async()=>{await requestBatch('reviewItem',{batchId,revision:batch.revision,sourceId:source.sourceId,action:'exclude'});draft(source).selected=false;await load();}));
  }
  function render(){
   if(!batch)return;
   notice.textContent=`任务 ${batch.batchId} · ${batch.report?reportStatus(batch.report.status):statusName(batch.phase)}。请集中审核名称、分类与最终位置。`;
-  controls.replaceChildren();for(const action of !unsafe()&&!batch.report?.hasExecution?(batch.analysisJob?.allowedActions??[]):[])controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();}));
+  controls.replaceChildren();for(const action of reviewAnalysisActions(batch))controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();}));
   controls.append(button('刷新建议',load));const legacy=element('a','执行与恢复入口');legacy.href='/task-report?batchId='+encodeURIComponent(batchId);controls.append(legacy);
   const options=(select,values,value,label)=>{select.replaceChildren();const first=element('option',label);first.value='';select.append(first);for(const [key,text] of values){const option=element('option',text);option.value=key;select.append(option);}select.value=value;};
   options(categoryFilter,[...new Set(rows.map(s=>s.classification?.category).filter(v=>v!==null&&v!==undefined))].map(v=>[v||'@root',v||'Raw 根目录']),category,'全部分类');
   options(statusFilter,[...new Set(rows.map(s=>s.status))].map(v=>[v,statusName(v)]),status,'全部状态');
   const list=filtered();page=Math.min(page,Math.max(0,Math.ceil(list.length/20)-1));const visible=list.slice(page*20,page*20+20);if(!visible.some(s=>s.sourceId===focus))focus=visible[0]?.sourceId;
-  const selected=rows.filter(s=>draft(s).selected&&selectable(s));summary.textContent=`整批 ${rows.length} 份 · 正常建议 ${rows.filter(s=>editable(s)&&s.classification?.category!==null&&!s.evolution).length} 份 · 例外 ${rows.filter(s=>['needs-information','blocked','analysis-failed','evolution-review','classification-failed'].includes(s.status)||s.classification?.category===null||s.categoryConfirmationError).length} 份 · 当前筛选 ${list.length} 份 · 跨全部页面已选 ${selected.length} 份 · 已保存 ${rows.filter(s=>s.status==='reviewed').length} 份`;
+  const selected=rows.filter(s=>draft(s).selected&&selectable(s));summary.textContent=`整批 ${rows.length} 份 · 正常建议 ${rows.filter(s=>editable(s)&&s.classification?.category!==null&&!s.directoryDependency).length} 份 · 例外 ${rows.filter(s=>['needs-information','blocked','analysis-failed','evolution-review','classification-failed'].includes(s.status)||s.classification?.category===null||s.categoryConfirmationError).length} 份 · 当前筛选 ${list.length} 份 · 跨全部页面已选 ${selected.length} 份 · 已保存 ${rows.filter(s=>s.status==='reviewed').length} 份`;
   const table=element('table'),head=element('thead'),headRow=element('tr');for(const title of ['选择','原名称','新名称','主分类','状态'])headRow.append(element('th',title));head.append(headRow);table.append(head);const body=element('tbody');
   for(const source of visible){const d=draft(source),row=element('tr');row.setAttribute('aria-selected',String(focus===source.sourceId));row.onclick=()=>{focus=source.sourceId;for(const other of body.rows)other.setAttribute('aria-selected',String(other===row));showDetail(source);};
    const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&selectable(source);checkbox.disabled=!selectable(source)||busy||unsafe();checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;saveDrafts();render();};const cell=element('td');cell.append(checkbox);
@@ -70,9 +84,9 @@ export async function mountReviewWorkspace(host,batchId){
   }table.append(body);tableHost.replaceChildren(table);showDetail(visible.find(s=>s.sourceId===focus));
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
   const alreadyValidated=batch.historyValidation?.status==='awaiting-apply'&&selected.length===batch.historyPlan?.selectedCount&&selected.every(s=>s.selected&&s.status==='reviewed'&&draft(s).name===s.confirmedName&&draft(s).category===s.classification?.category);
-  const pureNew=selected.every(s=>s.ingestStatus==='new')&&!batch.flow.evolutionPlan&&!rows.some(s=>s.evolution?.operations?.length);
+  const pureNew=selected.every(s=>s.ingestStatus==='new'&&!s.directoryDependency);
   const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.onchange=()=>{paused=pause.checked;render();};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
-  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(selectable(s)&&!s.evolution&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!selected.length||alreadyValidated||unsafe()||!!batch.flow.evolutionPlan||batch.historyValidation?.status==='running'));
+  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button('选择整批正常建议',()=>{for(const s of rows)if(selectable(s)&&!s.directoryDependency&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!selected.length||alreadyValidated||unsafe()||batch.historyValidation?.status==='running'));
   footer.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
   renderHistoryActions(history,{batch,writersPaused:paused,run,refresh:load});
   renderInvalidations(invalidations,{batch:{...batch,sources:rows},run,refresh:load});

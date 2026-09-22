@@ -1,3 +1,5 @@
+import {executionBlock} from './execution-state.js';
+import {sourceDirectoryDependency} from './directory-dependencies.js';
 import path from 'node:path';
 import {mkdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -15,8 +17,8 @@ export function createNewArchiveWorkflow({store,view,operate,strategy,planning,f
   if(previous){if(previous.requestHash!==requestHash)batchFail('REQUEST_CHANGED','重复请求的审核范围已变化');return view(existing);}
   return operate(input,'archive-running',async(batch,save)=>{
    if(batch.mode!=='inbox')batchFail('INVALID_MODE','新增归档仅用于收件箱');
-   if(batch.flow.evolutionPlan||batch.sources.some(s=>s.evolution?.operations?.length))batchFail('HISTORY_REQUIRED','目录调整依赖必须经过历史安全验证');
-   if(batch.slices.some(s=>!['complete','cancelled'].includes(s.status)))batchFail('EXECUTION_INTERRUPTED','已有执行或失败证据，请先处理后再归档');
+
+   if(executionBlock(batch,'archive'))batchFail('EXECUTION_INTERRUPTED','已有执行或失败证据，请先处理后再归档');
    const chosen=input.items.map(item=>({item,source:batch.sources.find(s=>s.sourceId===item.sourceId)}));
    if(chosen.some(({source})=>!source))batchFail('INVALID_SELECTION','材料不在当前批次');
    if(chosen.some(({source})=>source.ingestStatus==='historical'))batchFail('HISTORY_REQUIRED','历史材料必须经过副本验证与原库确认');
@@ -27,6 +29,7 @@ export function createNewArchiveWorkflow({store,view,operate,strategy,planning,f
    for(const {item,source} of chosen){
     const outcome={sourceId:source.sourceId,identity:source.identity,status:'retained'};run.items.push(outcome);
     try{
+     if(sourceDirectoryDependency(batch,source,path.resolve(batch.libraryPath,'raw/sources',item.category??'',item.name??'')))batchFail('HISTORY_REQUIRED','该材料涉及目录调整依赖，须先确认完整目录方案；保留原处');
      if(['excluded','succeeded','blocked','needs-information'].includes(source.status)||source.ingestStatus!=='new')batchFail('INSUFFICIENT_EVIDENCE',source.skipReason??'材料已排除或证据不足，保留原处');
      const key=path.resolve(batch.libraryPath,'raw/sources',item.category??'',item.name??'').toLowerCase();
      if(targets.get(key)>1)batchFail('TARGET_EXISTS','所选材料目标重名，保留所有冲突项');
@@ -42,7 +45,7 @@ export function createNewArchiveWorkflow({store,view,operate,strategy,planning,f
    }
    run.status='archiving';await save();
    for(const outcome of run.items.filter(item=>item.status==='ready')){
-    const slice=batch.slices.find(s=>s.sliceId===outcome.sliceId);slice.status='applying';outcome.status='running';await save();
+   const slice=batch.slices.find(s=>s.sliceId===outcome.sliceId);slice.status='applying';outcome.status='running';await save();
     try{
      slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory});await save();
      if(slice.archiveResult.status!=='complete')throw Object.assign(new Error(slice.archiveResult.error?.message??'归档失败，请检查保留的来源与日志'),{code:slice.archiveResult.error?.code??'ARCHIVE_FAILED'});

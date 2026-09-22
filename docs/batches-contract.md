@@ -69,3 +69,7 @@ Windows 的产物目录使用独占创建的短随机名；LanceDB 在规划和�
 新增归档暂不迁移本地相对图片、材料或双链。来源含此类链接，或所选 Inbox／知识库范围中未移动 Markdown 指向来源时，报 `UNSUPPORTED_NEW_LINKS` 并保留全部文件，不复制附件、不生成正文；HTTP 等外链及纯锚点不受影响。已摄取历史继续使用冻结迁移与链接适配流程。
 
 首次分类树按全目录的真实名称和 aliases 搜索复用，允许跨分支命中唯一同义类；多个既有位置同义时返回 `AMBIGUOUS_CATEGORY`，要求明确边界，不能创建另一重复分类绕过审核。
+
+历史应用视图的 `groups`、`results` 与 `observedHistory.items` 各自最多 50 条，分别使用 `applicationGroupCursor`、`applicationResultCursor`、`observedHistoryCursor`（默认继承 `detailCursor`）和 `limit`。响应提供对应 `groupCount/groupNextCursor`、`resultCount/resultNextCursor`、`observedHistory.itemCount/nextCursor`；`verifiedGroupCount`、`resultCounts` 始终是完整计数。内部报告使用未经分页的执行证据，分页不改变授权范围或整批统计。
+
+C 页目录例外可评估、确认或放弃建议后重新选择已有分类。撤销已冻结共享方案须明确发送 `discardShared:true`，关联审核同时失效。目录依赖按冻结文件映射、源和目标目录及同一编译器生成的建议范围判断；缺少有效范围证据时保持阻断。独立来源可继续审核归档，完整目录关联成员仍需全部明确授权。

@@ -6,17 +6,30 @@ import {readHistoryEvidence,historyPlan,reserveHistoryApplication} from './histo
 import {planDigest} from './categories.js';
 const live=new Set();
 const exists=async file=>!!await lstat(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
-export function historyApplicationView(batch){
+function applicationSnapshot(batch){
  const job=batch.flow.historyApplication;if(!job)return {historyApplication:null};
  return {historyApplication:{status:job.status==='running'&&!live.has(batch.batchId)?'interrupted':job.status,phase:job.phase,planHash:job.planHash,evidenceDigest:job.evidenceDigest,selectedCount:job.sourceIds.length,groups:job.groups??[],error:job.error??null,independentArchiveError:job.independentArchiveError??null,results:job.results??[],authorizationPlanPath:job.authorizationPlanPath,resultPath:job.resultPath,journalPath:job.journalPath,allowedActions:job.status==='running'&&!live.has(batch.batchId)?['applyHistoryPlan']:[]}};
 }
+function applicationDetails(application,{detailCursor=0,applicationGroupCursor=detailCursor,applicationResultCursor=detailCursor,observedHistoryCursor=detailCursor,limit=25}={}){
+ if(!application)return null;
+ const size=Math.max(1,Math.min(50,Number(limit)||25));
+ const page=(rows,cursor)=>{const offset=Math.max(0,Math.floor(Number(cursor)||0));return {rows:rows.slice(offset,offset+size),cursor:offset,count:rows.length,nextCursor:offset+size<rows.length?offset+size:null};};
+ const groups=page(application.groups??[],applicationGroupCursor),results=page(application.results??[],applicationResultCursor);
+ const resultCounts={};for(const item of application.results??[])resultCounts[item.status]=(resultCounts[item.status]??0)+1;
+ const answer={...application,groups:groups.rows.map(group=>({groupId:group.groupId,status:group.status,moveCount:group.moveIndexes?.length??0,itemCount:group.itemIds?.length??0})),groupCursor:groups.cursor,groupCount:groups.count,groupNextCursor:groups.nextCursor,verifiedGroupCount:(application.groups??[]).filter(group=>group.status==='verified').length,results:results.rows,resultCursor:results.cursor,resultCount:results.count,resultNextCursor:results.nextCursor,resultCounts,pageSize:size};
+ if(application.observedHistory){const items=page(application.observedHistory.items??[],observedHistoryCursor);answer.observedHistory={...application.observedHistory,items:items.rows,cursor:items.cursor,itemCount:items.count,nextCursor:items.nextCursor};}
+ return answer;
+}
+export function historyApplicationView(batch,input){return {historyApplication:applicationDetails(applicationSnapshot(batch).historyApplication,input)};}
 export function createHistoryApplication({store,view,checkIdle,fresh,original,strategy,reconcile}){
  const save=async batch=>Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));
  async function readSnapshot(input){
   // 磁盘版本和内存执行权必须同时取样；后续日志读取只能丰富该快照，不能重新判定其生命周期。
-  const snapshot=await store.get(input.batchId,batch=>({batch,answer:view(batch,input)})),{batch,answer}=snapshot,job=batch.flow.historyApplication;
-  try{if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});answer.historyApplication.groups=actual.executionGroups??[];answer.historyApplication.phase=actual.phase??job.phase;answer.historyApplication.journalPath=actual.journalPath;answer.historyApplication.observedHistory={status:actual.status,phase:actual.phase,interrupted:actual.interrupted??false,items:actual.items?.map(item=>({id:item.id,from:item.from,to:item.to,status:item.status})),error:actual.error??null};}}
+  const snapshot=await store.get(input.batchId,batch=>({batch,answer:view(batch,input),application:applicationSnapshot(batch).historyApplication})),{batch,answer,application}=snapshot,job=batch.flow.historyApplication;
+  try{if(job?.resultPath&&job.status==='running'&&await exists(job.resultPath)){const actual=await original.get({resultPath:job.resultPath});application.groups=actual.executionGroups??[];application.phase=actual.phase??job.phase;application.journalPath=actual.journalPath;application.observedHistory={status:actual.status,phase:actual.phase,interrupted:actual.interrupted??false,items:actual.items?.map(item=>({id:item.id,from:item.from,to:item.to,status:item.status})),error:actual.error??null};}}
   catch(error){snapshot.error=error;}
+  // 内部报告保留全部证据，HTTP 视图单独分页，不能用公开页反推整批计数。
+  answer.historyApplication=applicationDetails(application,input);
   return snapshot;
  }
  async function get(input){const snapshot=await readSnapshot(input);if(snapshot.error)throw snapshot.error;return snapshot.answer;}
