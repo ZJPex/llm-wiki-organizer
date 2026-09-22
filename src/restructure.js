@@ -13,7 +13,7 @@ function segments(values){if(Array.isArray(values)&&Buffer.byteLength(JSON.strin
 function validateGroups(result,allowed,merged=false){if(!Array.isArray(result?.categories)||!result.categories.length)batchFail('INVALID_TREE','分类树提议格式无效');const used=new Set();return result.categories.map(category=>{segments(category.segments);const ids=merged?category.groups:category.members;if(!Array.isArray(ids)||!ids.length||ids.some(id=>!allowed.has(id)||used.has(id)))batchFail('INVALID_TREE','分类提议遗漏或重复材料');ids.forEach(id=>used.add(id));if(typeof category.reason!=='string'||!category.reason.trim())batchFail('INVALID_TREE','分类须说明查找理由');return {...category,ids};}).map((category,index,array)=>{if(index===array.length-1&&used.size!==allowed.size)batchFail('INVALID_TREE','全范围材料尚未全部参与分类');return category;});}
 export function createRestructureStrategy({generate=generateWithModel}={}){
  async function discover({input}){if(pathKey(input.sourceRoot)!==pathKey(path.join(input.libraryPath,'raw/sources')))batchFail('INVALID_SCOPE','首次重构必须冻结完整 raw/sources 范围');return discoverSources(input);}
- async function analyze({batch,source,planning}){const entry=await planning.analyze({...batch,identity:source.currentIdentity});const low=['blank','noise','title-only'].includes(entry.kind);return {analysis:entry,kind:entry.kind,confirmedName:entry.confirmedName,status:low?'skipped':source.ingestStatus==='uncertain'?'blocked':'analyzed',skipReason:low?'低信息材料保留原文件和既有成果':source.skipReason};}
+ async function analyze({batch,source,planning,onProgress}){const entry=await planning.analyze({...batch,identity:source.currentIdentity,onProgress});const low=['blank','noise','title-only'].includes(entry.kind);return {analysis:entry,kind:entry.kind,confirmedName:entry.confirmedName,status:low?'skipped':source.ingestStatus==='uncertain'?'blocked':'analyzed',skipReason:low?'低信息材料保留原文件和既有成果':source.skipReason};}
  function invalidate(batch){for(const source of batch.sources){if(source.status==='reviewed')source.status='analyzed';source.selected=false;delete source.targetPath;delete source.treeRevision;}}
  async function tree({batch,input,save=async()=>{}}){
   const existing=batch.flow.tree;
@@ -86,6 +86,7 @@ export function createRestructureStrategy({generate=generateWithModel}={}){
   if(input.action==='exclude')return {sourcePatch:{selected:false,status:'skipped',skipReason:'用户选择保留原处'}};
   if(source.ingestStatus!=='historical')batchFail('UNKNOWN_ASSOCIATION','首次历史重构仅迁移有缓存证据的材料；新增材料请从 Inbox 处理');
   if(['blank','noise','title-only'].includes(source.kind))batchFail('LOW_INFORMATION','低信息材料保留原文件和成果');
+  if(input.action==='confirmPlan'&&(!input.nodeId||!tree.nodes.some(node=>node.nodeId===input.nodeId)))batchFail('INVALID_TREE','请选择已审核分类树中的节点');
   const node=tree.nodes.find(node=>node.nodeId===input.nodeId)||tree.nodes.find(node=>node.members.includes(source.sourceId));if(!node)batchFail('INVALID_TREE','请选择已审核分类节点');
   const name=input.name??source.confirmedName??source.analysis.suggestion;validateName(name);
   const entry=await planning.confirm({...batch,identity:source.currentIdentity,name,allowRenameConfirmed:input.allowRenameConfirmed===true});const targetPath=path.join(batch.sourceRoot,node.category,entry.confirmedName);
