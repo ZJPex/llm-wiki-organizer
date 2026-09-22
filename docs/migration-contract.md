@@ -1,5 +1,9 @@
 # 验证副本迁移接口（T3）
 
+歧义双链可通过 `linkResolutions:[{path,link,target}]` 明确选择，三个字段分别是库内引用页路径、原链接目标文本和现存候选路径。选择随冻结请求持久化，在重启和原库计划复核时重放；非候选、重复或已不存在的选择被拒绝。正文仍到执行阶段才修改。嵌套图片链接分别校验内外层目标；Wiki 页内的简写知识链接优先匹配 Wiki 文件，真正的同名候选不自动选择。仅移动引用页而候选集合不变时记录原有歧义并保留原链接。
+
+上游 `backupExistingPage` 生成的 `page-history/wiki_*.md-<ISO时间戳>` 为合并前历史正文，迁移保留原名和字节，不当成活动关联；未识别的状态文件继续严格校验。
+
 `createMigrationService()` 返回 `buildPlan(input)`／`executeValidation(input)`，同时保留网页使用的别名 `plan`／`execute`。计划输入 `{reportPath,oldPath,newPath,writersPaused:true}`，其中 reportPath 是成功 T2 报告，路径必须在 `raw/sources/` 内并以 `.md` 结尾。执行输入 `{planId,approved:true,writersPaused:true}`。服务只保存待审核计划于当前进程内存，重启后须重新预检与审核。
 
 公开计划返回 `mapping`、`summaryMapping`、`affectedPages`、`operations` 和 `baselineHash`；不返回知识正文。内部始终使用 `moves` 数组，本入口暂限一条源映射。执行前重新验证三份库、身份、恢复备份和完整副本基线。任何版本、路径、基线、关联异常都停止；只写 validationPath，不开放原库执行。

@@ -62,11 +62,12 @@ export async function copyTree(source, destination, baseline, directories, copy 
     const to = path.join(destination, file.path);
     await safePath(path.dirname(from));
     await safePath(path.dirname(to));
-    const stat = await lstat(from);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) fail('LINK_DATA', '复制前源文件类型或共享状态发生变化');
+    // 文件身份可能超过 Number 的精确整数范围，必须使用完整的 64 位值比较。
+    const stat = await lstat(from, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1n) fail('LINK_DATA', '复制前源文件类型或共享状态发生变化');
     await copy(from, to, constants.COPYFILE_EXCL);
-    const target = await lstat(to);
-    if (target.nlink !== 1 || (stat.dev === target.dev && stat.ino === target.ino)) fail('SHARED_DATA', '副本与源文件共享可写数据');
+    const target = await lstat(to, { bigint: true });
+    if (target.nlink !== 1n || (stat.dev === target.dev && stat.ino === target.ino)) fail('SHARED_DATA', '副本与源文件共享可写数据');
   }
   await verifyBackup(destination, baseline, directories);
 }

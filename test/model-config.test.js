@@ -34,7 +34,7 @@ test('Codex CLI 通过标准输入接收材料并返回最终 JSON，模型名�
   await writeFile(fixture, `let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
     const args=process.argv.slice(2);
     const result={title:'缓存',summary:'缓存分析',evidence:['缓存正文'],uncertain:false};
-    if(!input.includes('缓存正文')||!input.includes('材料整理助手')||args[args.indexOf('--model')+1]!=='model & echo secret'||!args.includes('read-only')||!args.includes('--ephemeral'))process.exit(2);
+    if(!input.includes('缓存正文')||!input.includes('材料整理助手')||!input.includes('连续精确子串')||args[args.indexOf('--model')+1]!=='model & echo secret'||!args.includes('read-only')||!args.includes('--ephemeral'))process.exit(2);
     console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(result)}}));
     console.log(JSON.stringify({type:'turn.completed'}));
   });`);

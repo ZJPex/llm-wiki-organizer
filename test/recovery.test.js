@@ -18,6 +18,26 @@ import {createApp} from '../src/server.mjs';
 import {validateExternalCopy} from '../scripts/upstream-frontend/external-copy.mjs';
 const exec=promisify(execFile);
 const quiet=async()=>({upstreamCommit:UPSTREAM_COMMIT,result:{changedTasks:[],queue:{version:1,tasks:[]}},events:[]});
+test('恢复保留备份原有失效来源；Windows 缓存大小写别名按实际文件核验',async t=>{
+ const f=await migrationFixture(t,{decorate:async({write,libraryPath})=>{
+  await write('wiki/legacy.md','---\nsources: [missing-before-backup.md]\n---\n历史内容');
+  if(process.platform==='win32'){
+   const file=path.join(libraryPath,'.llm-wiki/ingest-cache.json'),cache=JSON.parse(await readFile(file,'utf8'));
+   cache.entries['old.md'].filesWritten=cache.entries['old.md'].filesWritten.map(p=>p==='wiki/concept.md'?'wiki/Concept.md':p);await writeFile(file,JSON.stringify(cache));
+  }
+ }});
+ const migration=createMigrationService({verify:quiet}),plan=await migration.plan(f.input);
+ const migrated=await migration.execute({planId:plan.planId,approved:true,writersPaused:true});assert.equal(migrated.status,'complete');
+ const recovery=createRecoveryService({verify:quiet}),prepared=await recovery.plan({journalPath:migrated.journalPath,mode:'new-directory',destination:path.join(f.root,'restored'),writersPaused:true});
+ const result=await recovery.execute({recoveryPlanPath:prepared.recoveryPlanPath,approved:true,writersPaused:true});
+ assert.equal(result.status,'complete',JSON.stringify(result.error));
+ assert.equal(result.verification.preexistingSourceIssues.length,1);
+ assert.equal(await readFile(path.join(result.restoreRoot,'wiki/legacy.md'),'utf8'),'---\nsources: [missing-before-backup.md]\n---\n历史内容');
+ const changed=createRecoveryService({verify:quiet,checkpoint:async(stage,{report})=>{if(stage==='restore-bind')await writeFile(path.join(report.stagingPath,'wiki/legacy.md'),'---\nsources: [newly-missing.md]\n---\n发生新修改');}});
+ const changedPlan=await changed.plan({journalPath:migrated.journalPath,mode:'new-directory',destination:path.join(f.root,'changed-restore'),writersPaused:true});
+ const rejected=await changed.execute({recoveryPlanPath:changedPlan.recoveryPlanPath,approved:true,writersPaused:true});
+ assert.equal(rejected.status,'failed');assert.equal(rejected.error.code,'INVALID_ASSOCIATION');
+});
 async function failedFixture(t,options){
  const f=await migrationFixture(t,options);const migration=createMigrationService({verify:quiet,checkpoint:async stage=>{if(stage==='move')throw new Error('故障后保留');}});
  const plan=await migration.plan(f.input);const failed=await migration.execute({planId:plan.planId,approved:true,writersPaused:true});assert.equal(failed.status,'failed');

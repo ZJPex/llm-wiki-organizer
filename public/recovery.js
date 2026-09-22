@@ -31,3 +31,15 @@ $('#plan').onsubmit=event=>{event.preventDefault();run(async()=>{const form=Obje
 $('#execute').onclick=()=>run(async()=>{if(!$('#approved').checked||!$('#plan').elements.writersPaused.checked)throw new Error('请先审核恢复方案并确认外部写入已暂停');const result=await call('execute',{recoveryPlanPath:plan.recoveryPlanPath,approved:true,writersPaused:true});show(result);$('#status').textContent=result.status==='complete'?'恢复完成，现场和备份均已核验。':`恢复已停止：${result.error?.message??result.phase}。保留的磁盘证据可用于继续恢复。`;});
 $('#query').onclick=()=>run(async()=>{show(await call('get',{recoveryPlanPath:$('#recovery-path').value}));$('#status').textContent='已读取磁盘结果。';});
 $('#resume').onclick=()=>run(async()=>review(await call('get',{recoveryPlanPath:$('#recovery-path').value})));
+// 从持久任务定位日志，仅预填并查询；仍由用户确认恢复方式及写入条件。
+const params=new URLSearchParams(location.search);
+if(params.has('batchId')&&params.has('sliceId'))run(async()=>{
+ const {requestBatch}=await import('./batch-ui.js');let cursor=0,entry;
+ do{const report=await requestBatch('getReport',{batchId:params.get('batchId'),evidenceCursor:cursor});entry=report.evidence.find(item=>item.sliceId===params.get('sliceId'));cursor=report.evidenceNextCursor;}while(!entry&&cursor!==null);
+ if(!entry?.journalPath)throw new Error('该执行记录没有可供整库恢复的迁移日志，请返回任务报告检查归档现场');
+ $('#plan').elements.journalPath.value=entry.journalPath;
+ // 副本演练计划不能用于恢复原库；原库现场必须重新生成绑定原库的方案。
+ if(!entry.originalJournalPath&&entry.recoveryPlanPath)$('#recovery-path').value=entry.recoveryPlanPath;
+ const back=document.createElement('a');back.href='/task-report?batchId='+encodeURIComponent(params.get('batchId'));back.textContent='返回关联任务报告';document.querySelector('main').prepend(back);
+ show(await call('inspect',{journalPath:entry.journalPath}));$('#status').textContent='已从任务记录定位现场。尚未执行恢复，请核对恢复位置和保留内容。';
+});

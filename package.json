@@ -1,1 +1,1 @@
-{"name":"llm-wiki-organizer","version":"0.1.0","private":true,"type":"module","engines":{"node":">=22"},"scripts":{"start":"node src/server.mjs","test":"node --test test/*.test.js"},"dependencies":{"@lancedb/lancedb":"0.27.0","apache-arrow":"18.1.0"}}
+{"name":"llm-wiki-organizer","version":"0.1.0","private":true,"type":"module","engines":{"node":">=22"},"scripts":{"start":"node src/server.mjs","prototype":"node scripts/organizer-prototype.mjs","test":"node --test test/*.test.js"},"dependencies":{"@lancedb/lancedb":"0.27.0","apache-arrow":"18.1.0"}}

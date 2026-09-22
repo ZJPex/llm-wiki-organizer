@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { canonicalPath } from './filesystem-paths.js';
 import { proposeEvolution, freezeEvolution } from './evolution.js';
+import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
@@ -35,6 +36,15 @@ function kindOf(view) {
 function checkedAnalysis(result, text) {
   if (!result || typeof result.title !== 'string' || typeof result.summary !== 'string' || !Array.isArray(result.evidence) || result.evidence.some(e => typeof e !== 'string' || !e || !text.includes(e))) throw new Error('模型分析缺少可核验的原文证据');
   return { title: result.title, summary: result.summary, evidence: result.evidence, uncertain: result.uncertain !== false || !result.evidence.length };
+}
+
+async function generateCheckedAnalysis(generate, config, request, content) {
+  const run = input => generate(config, input).then(result => checkedAnalysis(result, content));
+  try { return await run(request); }
+  catch (error) {
+    if (error.message !== '模型分析缺少可核验的原文证据') throw error;
+    return run({ ...request, evidenceRequirement: 'evidence 每一项必须是 content 中的连续精确子串，逐字符保留原标点与空白；不能精确引用时返回空数组并将 uncertain 设为 true。' });
+  }
 }
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
@@ -75,7 +85,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const sourceHash = hash(text);
       const saved = await state(sourceRoot, input.libraryPath);
       const prior = saved.data.entries[identity];
-      if (prior?.hash === sourceHash) return { ...prior, reused: true };
+      if (prior?.hash === sourceHash && !input.reanalyze) return { ...prior, reused: true };
       const view = analysisView(text);
       const kind = kindOf(view);
       const seriesPattern = /第[零一二三四五六七八九十百千0-9]+[章节课讲]|(?:chapter|lesson|part)\s*\d+/gi;
@@ -86,18 +96,22 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
         const config = await readModelConfig(input);
         const size = Math.max(256, Math.min(8000, Math.floor((config.maxContextSize ?? 16000) / 4)));
         for (let start = 0; start < view.length; start += size) {
+          await input.onProgress?.({stage:'segment',step:Math.floor(start/size)+1,totalSteps:Math.ceil(view.length/size)});
           const content = view.slice(start, start + size);
-          entry.segments.push({ start, end: Math.min(start + size, view.length), ...checkedAnalysis(await generate(config, { stage: 'segment', content, identity }), content) });
+          entry.segments.push({ start, end: Math.min(start + size, view.length), ...await generateCheckedAnalysis(generate, config, { stage: 'segment', content, identity }, content) });
         }
         // 分层归并使每一段均参与，避免把超长全文再次塞入一个上下文。
-        let summaries = entry.segments;
+        let summaries = entry.segments, round = 0;
         while (summaries.length > 1) {
+          round++;
           const next = [];
           for (let offset = 0; offset < summaries.length; offset += 4) {
+            await input.onProgress?.({stage:'synthesis',round,step:Math.floor(offset/4)+1,totalSteps:Math.ceil(summaries.length/4)});
             const group = summaries.slice(offset, offset + 4);
             const content = group.map(s => `${s.summary}\n${s.evidence.join('\n')}`).join('\n');
-            const result = checkedAnalysis(await generate(config, { stage: 'synthesis', content, identity }), content);
-            next.push({ ...result, uncertain: result.uncertain || group.some(s => s.uncertain) });
+            const result = await generateCheckedAnalysis(generate, config, { stage: 'synthesis', content, identity }, content);
+            // 全文主题由汇总独立判断，局部歧义不作为全篇否决票。
+            next.push(result);
           }
           summaries = next;
         }
@@ -124,7 +138,13 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const collision = (await readdir(path.dirname(file))).some(p => p.toLowerCase() === name.toLowerCase() && p !== path.basename(file));
       const duplicate = Object.values(saved.data.entries).some(e => e.identity !== identity && path.dirname(e.identity) === path.dirname(identity) && e.confirmedName?.toLowerCase() === name.toLowerCase());
       if (collision || duplicate) throw new Error('目标名称已存在，不能覆盖');
-      if (entry.confirmedName !== name) { delete entry.classification; delete entry.frozenPlan; } entry.confirmedName = name; entry.reviewRequired = false;
+      if (entry.confirmedName !== name) {
+        // 分类依据来自正文，与首次确认名字无关；只撤销路径授权并更新待审核位置。
+        const classification=entry.classification;
+        if(classification&&(await categoryCatalog(classification.catalogRoot)).hash===classification.catalogHash)entry.classification={...classification,status:'needs-review',finalPath:classification.category===null?null:path.join(classification.catalogRoot,classification.category,name)};
+        else delete entry.classification;
+        delete entry.frozenPlan;
+      } entry.confirmedName = name; entry.reviewRequired = false;
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -132,15 +152,33 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
-      if (!entry?.confirmedName || entry.reviewRequired) throw new Error('请先确认当前文件名');
+      if (!entry) throw new Error('请先完成全文分析');
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('源文件变化，请重新分析');
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
-      const recommendation = await recommendCategory({ entry, catalog, config, generate });
+      const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
-      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName) };
+      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName ?? entry.suggestion ?? path.basename(entry.identity)) };
       delete entry.frozenPlan;
+      await persist(saved.file, saved.data);
+      return entry;
+    }),
+    // 名称与分类在全部校验通过后一次保存，建议名不冒充已确认名。
+    confirmPlan: input => serial(async () => {
+      const saved = await state(input.sourceRoot, input.libraryPath);
+      const file = await sourceFile(input.sourceRoot, input.identity);
+      const entry = saved.data.entries[input.identity];
+      if (!entry?.classification || !entry.analysis || entry.analysis.uncertain || !['body','navigation'].includes(entry.kind) || entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('内容证据不足或源基线变化');
+      if (evolutionTouches(saved.data.evolution,{sourcePath:file,targetPath:path.resolve(entry.classification.catalogRoot,input.category??'',input.name??''),categoryRoot:entry.classification.catalogRoot,owner:saved.data.evolution?.identity===entry.identity})) throw new Error('目录调整尚未解决，请先处理目录依赖');
+      const name = validateName(input.name);
+      if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
+      const catalog = await categoryCatalog(entry.classification.catalogRoot);
+      if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
+      const target = await finalTarget(catalog, input.category, name, file);
+      if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      Object.assign(entry, {confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -192,9 +230,21 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       }
       const plan = freezeEvolution(proposal, input.operations, names);
       if (input.previewOnly) return { ...proposal, preview: plan };
-      saved.data.evolution = { ...proposal, status: 'confirmed', frozenPlan: plan };
+      saved.data.evolution = { ...proposal, operations:input.operations, status: 'confirmed', frozenPlan: plan };
       await persist(saved.file, saved.data);
       return saved.data.evolution;
+    }),
+    discardEvolution: input => serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath);
+      if(saved.data.evolution&&saved.data.evolution.identity!==input.identity)throw new Error('请从提出这份目录调整的材料取消方案');
+      delete saved.data.evolution;await persist(saved.file,saved.data);
+    }),
+    invalidateReview: input => serial(async () => {
+      const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];
+      if(!entry)return;
+      delete entry.frozenPlan;entry.reviewRequired=true;
+      if(input.clearClassification)delete entry.classification;
+      await persist(saved.file,saved.data);
     }),
     list: input => serial(async () => (await state(input.sourceRoot, input.libraryPath)).data),
   };
