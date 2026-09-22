@@ -1,6 +1,24 @@
 # 首次重构与共享整理批次
 
-## Inbox 批量确认推荐分类
+## 集中审核与自动执行
+
+首页 C 工作台复用知识库设置、发现已有任务，并以材料表格集中审核。`startAnalysis`、`pauseAnalysis`、`continueAnalysis` 管理服务端分析；页面关闭不影响仍运行的服务，进程重启后须手动继续。`analysisJob` 给出持久进度与可用动作。
+
+`confirmPlans` 接受明确的 `items` 范围，名称与分类一并审核。`replaceSelection:true` 表示完整替换选择，未列材料不能沿用先前选择进入执行。纯新增通过 `confirmNewArchive` 一次确认后自动检查、归档，稳定 `requestId` 防止重复请求重复搬动。
+
+历史材料先确认整份文件方案，再调用 `startHistoryValidation`；工作台将两次 HTTP 请求合为一次用户确认。服务自动串联完整备份、副本验证和独立恢复演练，`historyValidation` 停在 `awaiting-apply`。`planHash` 绑定全部审核范围，`evidenceDigest` 绑定必要证据。失败保留现场，手动 `continueHistoryValidation` 复核旧证据或建立独立新尝试。
+
+`applyHistoryPlan` 接受当前 `revision,planHash,evidenceDigest,approved:true,writersPaused:true`，作为唯一最终应用授权。所有历史操作共用已验证的完整迁移清单，内部执行分组在日志中记录，并从原始基线及冻结操作推导每个边界的预期文件与目录；不把实际现状直接认作新基线。无法证明的外部变化停止后续写入。历史失败时，依赖该迁移的新增材料不能先行归档；只有仍能证明原库未变化且无迁移依赖的范围才可独立处理。
+
+首次重构额外在文件方案前审核分类树，正常路径总计三次确认。页面不以后台执行分组增加人工审核次数。以下单项分类及分批接口保留用于兼容已有任务和排查，不代表 C 工作台的日常操作步骤。
+
+## 变化检查与局部重审
+
+`refreshReview({batchId,revision})` 重新检查来源正文、摄取关联、分类目录、目标占用和目录调整依赖。`invalidations` 返回影响范围、原因、保留的有效审核及正文分析数量。正文变化需要重新分析该材料；关联或分类变化保留未变正文证据，仅撤销相关审核或分类。全树输入或全局分类检索无法证明独立时，明确扩大重审范围。
+
+`reviewVersion` 使同一正文哈希下已失效的选择与分类草稿失效，不覆盖仍有效的手改。共享原库基线或验证证据变化要求重新建立安全验证；无关逐文件审核仍可保留，旧最终授权不能应用新方案。已经成功的材料不退回待执行，存在不确定写入日志时只允许查询和恢复，不能通过刷新或重新分析绕过现场处理。
+
+## 兼容入口：Inbox 批量确认推荐分类
 
 `POST /api/batches/confirmRecommendedCategories` 接收 `batchId` 与当前 `revision`，遍历整批而非当前页。只确认已命名、内容与关联可靠、尚待分类审核且有明确推荐的材料；`""` 是有效的 Raw 根分类，`null` 不代表根分类。未命名、未分类、已排除、已审核、已执行和待目录演化的材料保持原状。批次包含已审核的目录演化方案时，需要逐项核对演化后的路径，不提供批量确认。
 
@@ -22,13 +40,13 @@
 
 树通过审核后才展示可编辑文件名与分类路径。树编辑使旧文件审核和未执行分批失效；内容变化要求重新分析与审核。审核名称沿用 planning 的已确认名字规则，冲突不加后缀、不覆盖。
 
-选中材料逐批走 T2 完整备份 → T6 验证副本 → T7 独立恢复演练 → T8 原库最终确认。后续分批重新建立三份数据基线，不能复用首批的旧基线。反链修复影响剩余材料内容时，该材料重新进入分析；未选材料、低信息及不确定材料保持可见。执行阶段不调用内容模型。
+旧分批接口仍逐批建立 T2 完整备份 → T6 验证副本 → T7 独立恢复演练 → T8 原库最终确认。C 工作台使用上文的整份验证与授权，不重复审核内部分组。反链修复影响剩余材料内容时，该材料重新进入分析；未选材料、低信息及不确定材料保持可见。执行阶段不调用内容模型。
 
 Windows 的产物目录使用独占创建的短随机名；LanceDB 在规划和写入前检查随机数据文件所需路径余量，路径过长要求改用较短的库外目录。失败保留原库、备份、验证现场和具体日志。页面展示受影响链接、索引表、逐项状态、模型尝试及重扫结果，并可转到恢复入口。
 
 ## 共享接口
 
-`createBatchService({strategies,planning,backup,migration,recovery,original,stateDirectory})` 注册首次重构与 Inbox 策略。HTTP 为 `/api/batches/create|get|list|analyzeNext|treeAction|reviewItem|prepareSlice|validateSlice|prepareOriginal|applySlice|cancelSlice`，沿用本机会话和 16 KiB 请求上限。
+`createBatchService({strategies,planning,backup,migration,recovery,original,stateDirectory})` 注册首次重构与 Inbox 策略。HTTP 统一位于 `/api/batches/`，沿用本机会话。除上述后台与集中操作外，保留 `create|get|list|analyzeNext|treeAction|reviewItem|prepareSlice|validateSlice|prepareOriginal|applySlice|cancelSlice`。`confirmPlans` 的明确全量选择请求上限为 2 MiB，其他批次请求保持 16 KiB 上限。首次重构的 `confirmPlans` 同时携带 `treeRevision`，每项使用 `sourceId,name,nodeId`，防止沿用旧分类树。
 
 创建输入为 `mode,libraryPath,sourceRoot,wikiSourcePath,configPath,artifactRoot`。变更请求只发送 `batchId,revision` 加一个材料／节点补丁或 `sliceId`；映射与证据留在服务端，不回传全路径清单执行。查询按 `cursor,limit` 分页来源、`treeCursor` 分页分类节点；`detailCursor` 独立分页每类执行明细（含节点成员、所选来源、链接、索引、逐项结果和事件），`detailNextCursor` 表示仍有明细。`sliceCursor,sliceLimit` 分页分批，默认仅返回最新一批。每页最多 50 项，页面提供独立明细及分批前后翻页。`detailCount` 等计数表示完整记录数量，不以当前页长度代替模型尝试或重扫变更计数。公共响应采用字段白名单，不输出原文 segments、冻结规划、私有身份映射 committedMappings 或恢复前像；证据每条最多 400 字、最多 8 条，完整磁盘证据保留。
 

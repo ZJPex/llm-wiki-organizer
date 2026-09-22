@@ -21,8 +21,10 @@ export function renderHistoryActions(host,{batch,writersPaused,run,refresh}){
  if(application){
   const labels={running:'正在后台应用',complete:'已确认范围执行完成','needs-recovery':'现场需要查询或恢复',failed:'应用尚未完成',interrupted:'上次应用中断，等待查询'};
   host.append(element('h2',labels[application.status]??application.status));
-  host.append(element('p',`执行范围 ${application.selectedCount} 份；执行阶段 ${application.phase}`));
-  for(const group of application.groups??[])host.append(element('p',`${group.groupId}：${({pending:'等待',staged:'已暂存',placed:'已放置，待整体验证',verified:'整体验证通过','stage-running':'正在暂存','place-running':'正在放置'})[group.status]??group.status}`));
+  const phaseNames={authorized:'已确认执行范围','preparing-authorization':'核对最终授权','applying-history':'迁移历史材料','archiving-new':'归档新增材料',complete:'已完成',stopped:'已停止','verified-original':'原库验证通过'};
+  host.append(element('p',`执行范围 ${application.selectedCount} 份；${phaseNames[application.phase]??'正在核对执行状态'}`));
+  const groups=application.groups??[];
+  if(groups.length){const progress=element('details');progress.append(element('summary',`内部分批：${groups.filter(group=>group.status==='verified').length} / ${groups.length} 已验证（展开查看）`));for(const [index,group] of groups.entries())progress.append(element('p',`第 ${index+1} 组：${({pending:'等待',staged:'已暂存',placed:'已放置，待整体验证',verified:'整体验证通过','stage-running':'正在暂存','place-running':'正在放置'})[group.status]??group.status}`));host.append(progress);}
   if(application.error)host.append(element('p',application.error.message));
   const labelsResult={succeeded:'成功',retained:'保留','dependency-blocked':'依赖阻断',unverified:'未验证'};
   for(const status of Object.keys(labelsResult)){const items=(application.results??[]).filter(item=>item.status===status);if(items.length)host.append(element('p',labelsResult[status]+'：'+items.length+' 份'));}

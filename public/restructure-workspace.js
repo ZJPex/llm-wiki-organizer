@@ -1,6 +1,7 @@
 import {element,requestBatch,statusName} from './batch-ui.js';
 import {submitHistoryPlan,renderHistoryActions} from './history-actions.js';
 import {reviewReason} from './bulk-review.js';
+import {renderInvalidations} from './invalidation-ui.js';
 
 // 树版本参与草稿身份，避免分类调整后悄悄沿用旧节点选择。
 export function restructureDraft(source,current,treeRevision){
@@ -14,7 +15,8 @@ export async function mountRestructureWorkspace(host,batchId){
  const persist=()=>sessionStorage.setItem(key,JSON.stringify(drafts));
  const draft=source=>drafts[source.sourceId]=restructureDraft(source,drafts[source.sourceId],batch.flow.tree?.revision);
  const root=element('div'),notice=element('p'),error=element('p'),controls=element('div'),treeHost=element('section'),files=element('section'),history=element('section');
- notice.setAttribute('role','status');error.setAttribute('role','alert');controls.className='toolbar';treeHost.setAttribute('aria-label','分类树审核');files.setAttribute('aria-label','全量文件方案');history.setAttribute('aria-label','安全验证与应用');root.append(notice,error,controls,treeHost,files,history);host.replaceChildren(root);
+ const invalidations=element('section');invalidations.setAttribute('aria-label','材料变化与重审');
+ notice.setAttribute('role','status');error.setAttribute('role','alert');controls.className='toolbar';treeHost.setAttribute('aria-label','分类树审核');files.setAttribute('aria-label','全量文件方案');history.setAttribute('aria-label','安全验证与应用');root.append(notice,error,controls,invalidations,treeHost,files,history);host.replaceChildren(root);
  const button=(text,action,disabled=false)=>{const b=element('button',text);b.disabled=disabled||busy;b.onclick=()=>run(action);return b;};
  async function run(action){if(busy)return;busy=true;error.textContent='';try{await action();}catch(e){error.textContent=e.message;try{await load();}catch{}}finally{busy=false;render();}}
  async function load(){
@@ -44,6 +46,7 @@ export async function mountRestructureWorkspace(host,batchId){
   if(approved)renderFiles();
   const pause=element('input');pause.type='checkbox';pause.checked=writersPaused;pause.onchange=()=>{writersPaused=pause.checked;render();};const label=element('label','我已暂停 Wiki、Obsidian 和同步程序等外部写入');label.prepend(pause);
   renderHistoryActions(history,{batch,writersPaused,run,refresh:load});if(approved||validation)history.prepend(label);
+  renderInvalidations(invalidations,{batch:{...batch,sources:rows},run,refresh:load});
  }
  function renderFiles(){
   const fileLocked=locked()||batch.historyValidation?.status==='awaiting-apply';
