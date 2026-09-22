@@ -13,6 +13,7 @@ import {listenForBrowser} from './helpers/http-server.js';
 const record=()=>({mode:'inbox',libraryPath:path.resolve('test-library'),sourceRoot:path.resolve('test-inbox'),phase:'batch-progress',flow:{newArchives:[{items:[{sourceId:'1',status:'succeeded',to:path.resolve('test-library/raw/sources/one.md')}]}]},sources:[{sourceId:'1',identity:'a.md',currentPath:path.resolve('test-library/raw/sources/one.md'),status:'succeeded'},{sourceId:'2',identity:'empty.md',currentPath:path.resolve('test-inbox/empty.md'),status:'needs-information'}],slices:[],events:[]});
 test('整批报告包含未选低信息材料，不把授权范围全部成功当整批完成',()=>{
  const report=buildBatchReport(record());assert.equal(report.status,'partial');assert.equal(report.counts.total,2);assert.equal(report.counts.succeeded,1);assert.equal(report.counts.retained,1);assert.match(report.items[1].reason,/信息不足/);
+ const history=record();history.flow.historyApplication={status:'complete',results:[{sourceId:'2',status:'retained'}]};assert.match(buildBatchReport(history).items[1].reason,/信息不足/);
 });
 test('多次执行累计成功；归档中断只能报告未验证，复制歧义不允许续作',()=>{
  const batch=record();batch.sources.push({sourceId:'3',identity:'b.md',currentPath:path.resolve('test-inbox/b.md'),status:'reviewed'});batch.flow.newArchives.push({items:[{sourceId:'3',status:'failed',sliceId:'three'}]});batch.slices.push({sliceId:'three',sourceIds:['3'],status:'failed',newFiles:[{sourceId:'3'}],archiveResult:{archiveJournalPath:'archive.json',items:[{sourceId:'3',from:'b.md',to:'c.md',status:'copy-intent'}]}});

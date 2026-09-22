@@ -41,6 +41,7 @@ export function buildBatchReport(batch,{cursor=0,limit=50,evidenceCursor=0,isAct
    if(source.status==='blocked'||source.evolution?.operations?.length){item.status='blocked';item.reason=source.skipReason??'来源关联或目录依赖尚未解决';}
    else if(['excluded','needs-information','skipped'].includes(source.status)||hasExecution){item.status='retained';item.reason=source.skipReason??source.categoryConfirmationError??(source.status==='needs-information'?'正文信息不足，保留原处':'未纳入已执行范围，保留原处');}
   }
+  if(item.status==='retained'&&!item.reason)item.reason=source.skipReason||source.categoryConfirmationError||(source.status==='needs-information'?'正文信息不足，保留原处':'未纳入已执行范围，保留原处');
   if(item.status==='retained'||item.status==='blocked')item.to=source.currentPath;
   return item;
  });
