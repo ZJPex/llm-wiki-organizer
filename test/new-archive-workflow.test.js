@@ -32,6 +32,7 @@ test('公开入口一次确认：独立成功，冲突与低信息保留，重�
  assert.equal(result.slices[0].archiveResult.newIngestRequests.length,0);assert.equal(await readFile(f.configPath,'utf8'),config);assert.equal(await readFile(path.join(f.libraryPath,'raw/sources/occupied.md'),'utf8'),'不可覆盖');
  await assert.rejects(lstat(path.join(f.sourceRoot,'a.md')),{code:'ENOENT'});await lstat(path.join(f.sourceRoot,'b.md'));await lstat(path.join(f.sourceRoot,'low.md'));
  const again=await f.call('confirmNewArchive',{...input,revision:1});assert.equal(again.sliceCount,result.sliceCount);assert.equal(again.flow.newArchive.counts.succeeded,1);
+ const report=await f.call('getReport');assert.equal(report.status,'partial');assert.equal(report.counts.total,4);assert.equal(report.counts.succeeded,1);assert.equal(report.counts.retained,3);assert.match(report.items.find(item=>item.identity==='c.md').reason,/未纳入/);
 });
 test('过期来源原处保留，独立有效项继续',async t=>{
  const f=await fixture(t);await writeFile(path.join(f.sourceRoot,'a.md'),'外部修改');const result=await f.call('confirmNewArchive',{requestId:'changed',writersPaused:true,items:[f.item('a','changed'),f.item('b','good')]});
@@ -53,4 +54,5 @@ test('复制后失败保留来源、目标和日志，重复确认只查询证�
  const result=await f.call('confirmNewArchive',input);assert.equal(result.flow.newArchive.counts.failed,1);assert.equal(result.flow.newArchive.counts.retained,1);await lstat(path.join(f.sourceRoot,'a.md'));await lstat(path.join(f.libraryPath,'raw/sources/kept.md'));
  const full=await f.call('get',{sliceCursor:0,sliceLimit:50});const failed=full.slices.find(s=>s.status==='failed');const evidence=await readFile(failed.archiveResult.archiveJournalPath,'utf8');assert.equal(JSON.parse(evidence).items[0].status,'copied');
  await f.call('confirmNewArchive',input);assert.equal(await readFile(failed.archiveResult.archiveJournalPath,'utf8'),evidence);
+ await f.call('get');await assert.rejects(f.call('reviewItem',{sourceId:input.items[0].sourceId,action:'exclude'}),/执行现场/);await assert.rejects(f.call('startAnalysis'),/执行现场/);
 });

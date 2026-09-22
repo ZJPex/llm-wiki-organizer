@@ -3,7 +3,7 @@ import {reportStatus,reportSummary} from './report-ui.js';
 const $=s=>document.querySelector(s),batchId=new URLSearchParams(location.search).get('batchId');
 let report,batch,busy=false,cursor=0,evidenceCursor=0;
 const link=(label,url)=>{const a=element('a',label);a.href=url;return a;};
-const button=(label,action)=>{const b=element('button',label);b.disabled=busy;b.onclick=()=>run(action);return b;};
+const button=(label,action)=>{const b=element('button',label);b.onclick=()=>run(action);return b;};
 async function run(action){if(busy)return;busy=true;$('#error').textContent='';try{await action();}catch(e){$('#error').textContent=e.message;}finally{busy=false;}}
 async function load(){
  batch=await requestBatch('get',{batchId});report=await requestBatch('getReport',{batchId,cursor,evidenceCursor});

@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import os from 'node:os';
-import {buildBatchReport} from '../src/batch-report.js';
+import {buildBatchReport,readArchiveReportEvidence} from '../src/batch-report.js';
+import {planDigest} from '../src/categories.js';
 import {createBatchStore} from '../src/batch-store.js';
 import {createBatchService} from '../src/batches.js';
 import {createApp} from '../src/server.mjs';
@@ -18,6 +19,13 @@ test('多次执行累计成功；归档中断只能报告未验证，复制歧�
  let report=buildBatchReport(batch);assert.equal(report.counts.succeeded,1);assert.equal(report.status,'partial');assert.deepEqual(report.evidence[0].allowedActions,[]);
  batch.slices[0].archiveResult.items[0].status='copied';report=buildBatchReport(batch);assert.deepEqual(report.evidence[0].allowedActions,['applySlice']);
  batch.slices[0].status='applying';delete batch.slices[0].archiveResult;report=buildBatchReport(batch);assert.equal(report.status,'needs-recovery');assert.equal(report.counts.unverified,1);
+});
+test('归档进程退出后报告只读校验磁盘日志，损坏证据不授予续作',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'organizer-report-journal-'));t.after(()=>rm(root,{recursive:true,force:true}));const batch=record();batch.batchId='report-batch';batch.phase='archive-running';
+ const slice={sliceId:'copy',status:'applying',sourceIds:['2'],artifactDirectory:root,newFiles:[{sourceId:'2',from:batch.sources[1].currentPath,to:path.join(root,'target.md')}],watchConfig:{hash:'watch'}};batch.slices.push(slice);
+ const manifest={batchId:batch.batchId,sliceId:slice.sliceId,newFiles:slice.newFiles,watchConfig:slice.watchConfig};const journal={...manifest,manifestHash:planDigest(manifest),status:'running',items:[{...slice.newFiles[0],status:'copied'}]};journal.journalHash=planDigest(journal);const file=path.join(root,'inbox-archive.json');await writeFile(file,JSON.stringify(journal));
+ const report=buildBatchReport(await readArchiveReportEvidence(batch));assert.equal(report.status,'needs-recovery');assert.equal(report.evidence[0].archiveJournalPath,file);assert.deepEqual(report.evidence[0].allowedActions,['applySlice']);assert.equal(batch.slices[0].archiveResult,undefined);
+ journal.items[0].status='succeeded';await writeFile(file,JSON.stringify(journal));const broken=buildBatchReport(await readArchiveReportEvidence(batch));assert.equal(broken.evidence[0].error.code,'INVALID_JOURNAL');assert.deepEqual(broken.evidence[0].allowedActions,[]);
 });
 test('公开任务报告分页与重启：结果来自持久记录，恢复链接只指向真实迁移日志',async t=>{
  const stateDirectory=await mkdtemp(path.join(os.tmpdir(),'organizer-report-'));t.after(()=>rm(stateDirectory,{recursive:true,force:true}));const store=createBatchStore({stateDirectory}),input=record();
