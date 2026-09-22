@@ -61,3 +61,11 @@ test('三次实质确认完成首次重构，多执行分组不追加文件审�
  const authorization={planHash,evidenceDigest:f.batch().historyValidation.evidenceDigest,writersPaused:true,approved:true};await f.call('applyHistoryPlan',authorization);confirmations++;await f.wait(b=>b.historyApplication?.status!=='running');const result=f.batch();assert.equal(result.historyApplication.status,'complete',JSON.stringify(result.historyApplication));assert.equal(confirmations,3);assert.equal(result.counts.succeeded,3);assert.ok(result.historyApplication.groups.length>1);assert.ok(result.historyApplication.groups.every(g=>g.status==='verified'));assert.equal(f.modelCalls.length,modelCount);for(const source of result.sources.filter(s=>s.status==='succeeded'))assert.match(await readFile(source.currentPath,'utf8'),/数据库查询计划/);assert.equal(await readFile(path.join(f.sourceRoot,'空白.md'),'utf8'),'');assert.match(await readFile(path.join(f.libraryPath,'wiki/concept.md'),'utf8'),/保持知识正文/);
  const after=await inventory(f.libraryPath);await f.call('applyHistoryPlan',authorization);assert.equal((await inventory(f.libraryPath)).hash,after.hash);
 });
+
+test('重构局部正文变化保留其他分析，同时解释全树依赖重审',async t=>{
+ const f=await restructureWorkspaceFixture(t);await f.call('startAnalysis');await f.wait(b=>b.analysisJob.status==='complete');await f.call('treeAction',{action:'approve'});
+ let b=f.batch();await f.call('confirmPlans',{treeRevision:b.flow.tree.revision,items:b.sources.filter(s=>s.status==='analyzed').map(s=>({sourceId:s.sourceId,name:s.analysis.suggestion,nodeId:s.proposedNodeId}))});
+ const old=f.batch(),changed=old.sources.find(s=>s.status==='reviewed');await writeFile(changed.currentPath,'数据库新的查询证据需要分析和重新确认。');b=await f.call('refreshReview');assert.equal(b.flow.tree.status,'stale');assert.equal(b.counts.reviewed??0,0);assert.equal(b.sources.find(s=>s.sourceId===changed.sourceId).analysis,undefined);
+ for(const source of old.sources.filter(s=>s.sourceId!==changed.sourceId))assert.deepEqual(b.sources.find(s=>s.sourceId===source.sourceId).analysis,source.analysis);
+ assert.ok(b.invalidations.reasons.some(r=>r.code==='TREE_INPUT_CHANGED'));const versions=b.sources.map(s=>s.reviewVersion);b=await f.call('refreshReview');assert.deepEqual(b.sources.map(s=>s.reviewVersion),versions);
+});

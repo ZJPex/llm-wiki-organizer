@@ -14,7 +14,7 @@ function validateGroups(result,allowed,merged=false){if(!Array.isArray(result?.c
 export function createRestructureStrategy({generate=generateWithModel}={}){
  async function discover({input}){if(pathKey(input.sourceRoot)!==pathKey(path.join(input.libraryPath,'raw/sources')))batchFail('INVALID_SCOPE','首次重构必须冻结完整 raw/sources 范围');return discoverSources(input);}
  async function analyze({batch,source,planning,onProgress}){const entry=await planning.analyze({...batch,identity:source.currentIdentity,onProgress});const low=['blank','noise','title-only'].includes(entry.kind);return {analysis:entry,kind:entry.kind,confirmedName:entry.confirmedName,status:low?'skipped':source.ingestStatus==='uncertain'?'blocked':'analyzed',skipReason:low?'低信息材料保留原文件和既有成果':source.skipReason};}
- function invalidate(batch){for(const source of batch.sources){if(source.status==='reviewed')source.status='analyzed';source.selected=false;delete source.targetPath;delete source.treeRevision;}}
+ function invalidate(batch){for(const source of batch.sources){if(source.status==='succeeded')continue;if(source.status==='reviewed')source.status='analyzed';source.selected=false;delete source.targetPath;delete source.treeRevision;}}
  async function tree({batch,input,save=async()=>{}}){
   const existing=batch.flow.tree;
   if(input.action==='approve'){

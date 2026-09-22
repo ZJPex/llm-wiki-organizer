@@ -56,3 +56,8 @@ test('复制后失败保留来源、目标和日志，重复确认只查询证�
  await f.call('confirmNewArchive',input);assert.equal(await readFile(failed.archiveResult.archiveJournalPath,'utf8'),evidence);
  await f.call('get');await assert.rejects(f.call('reviewItem',{sourceId:input.items[0].sourceId,action:'exclude'}),/执行现场/);await assert.rejects(f.call('startAnalysis'),/执行现场/);
 });
+
+test('独立新增仅撤销变更正文的审核，目标占用只撤销冲突项',async t=>{
+ const f=await fixture(t);await f.call('confirmPlans',{items:[f.item('a','一'),f.item('b','UpperCase')]});const initial=f.get();await writeFile(path.join(f.sourceRoot,'a.md'),'缓存与索引的新正文');let b=await f.call('refreshReview');assert.equal(b.sources.find(s=>s.identity==='a.md').status,'needs-analysis');assert.equal(b.sources.find(s=>s.identity==='b.md').status,'reviewed');assert.deepEqual(b.sources.find(s=>s.identity==='b.md').analysis,initial.sources.find(s=>s.identity==='b.md').analysis);
+ await writeFile(path.join(f.libraryPath,'raw/sources/UpperCase.md'),'外部占用');b=await f.call('refreshReview');assert.ok(b.invalidations.reasons.some(r=>r.code==='TARGET_CONFLICT'));assert.equal(b.sources.find(s=>s.identity==='b.md').selected,false);assert.equal(await readFile(path.join(f.libraryPath,'raw/sources/UpperCase.md'),'utf8'),'外部占用');
+});

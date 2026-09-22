@@ -16,9 +16,10 @@ const exists=async file=>!!await lstat(file).catch(error=>{if(error.code==='ENOE
 // 审核范围由用户选中项决定，目录演化不能在 prepare 中偷偷增加历史材料。
 export function historyPlan(batch){
  const selected=batch.sources.filter(source=>source.selected),blockers=[];
- const items=selected.map(source=>({sourceId:source.sourceId,sourceHash:source.hash,associationHash:source.associationHash??null,from:source.currentPath,to:source.targetPath??null,name:source.confirmedName??null,ingestStatus:source.ingestStatus,treeRevision:source.treeRevision??null,catalogHash:source.frozenPlan?.catalogHash??null,sourcePlanHash:source.frozenPlan?.planHash??null})).sort((a,b)=>a.sourceId.localeCompare(b.sourceId));
+ const items=selected.map(source=>({sourceId:source.sourceId,reviewVersion:source.reviewVersion??0,sourceHash:source.hash,associationHash:source.associationHash??null,from:source.currentPath,to:source.targetPath??null,name:source.confirmedName??null,ingestStatus:source.ingestStatus,treeRevision:source.treeRevision??null,catalogHash:source.frozenPlan?.catalogHash??null,sourcePlanHash:source.frozenPlan?.planHash??null})).sort((a,b)=>a.sourceId.localeCompare(b.sourceId));
  for(const source of selected)if(source.status!=='reviewed'||!source.targetPath||source.ingestStatus==='uncertain')blockers.push({sourceId:source.sourceId,code:'REVIEW_REQUIRED',message:'尚未完成名称、分类和来源关联审核'});
  const evolution=batch.flow.evolutionPlan;
+ if(evolution?.invalidated)blockers.push({code:'DIRECTORY_DEPENDENCY',message:'目录演化依赖已变化，必须重新确认完整调整范围'});
  for(const source of batch.sources)if(source.evolution?.operations?.length&&source.evolution.status!=='confirmed')blockers.push({sourceId:source.sourceId,code:'DIRECTORY_DEPENDENCY',message:'目录调整尚未确认，相关完整范围保持阻断'});
  for(const mapping of evolution?.fileMappings??[]){const from=path.join(batch.libraryPath,'raw/sources',mapping.from),to=path.join(batch.libraryPath,'raw/sources',mapping.to);if(!items.some(item=>same(item.from,from)&&item.to&&same(item.to,to)))blockers.push({code:'DIRECTORY_DEPENDENCY',from,to,message:'目录调整涉及尚未明确选中并审核的历史材料，不能隐式扩张范围'});}
  if(batch.mode==='restructure'&&(batch.flow.tree?.status!=='approved'||selected.some(source=>source.treeRevision!==batch.flow.tree.revision)))blockers.push({code:'STALE_TREE',message:'分类树尚未确认或文件审核属于旧分类树'});
@@ -116,7 +117,7 @@ export function createHistoryWorkflow({store,view,checkIdle,fresh,strategy,plann
   const key=batch.libraryPath.toLowerCase();live.set(batch.batchId,true);libraries.set(key,batch.batchId);
   try{
    // 验证已写到副本但无成功证据时，新尝试使用新目录；旧备份与日志完整保留。
-   let restart=previous?.status==='failed'||previous?.planHash!==plan.planHash;
+   let restart=['failed','stale'].includes(previous?.status)||previous?.planHash!==plan.planHash||batch.slices.find(slice=>slice.sliceId===previous?.sliceId)?.status==='cancelled';
    if(previous?.status==='running'&&previous.validationJournalPath&&await exists(previous.validationJournalPath)){const journal=await json(previous.validationJournalPath);if(journal.status!=='complete')restart=true;}
    if(previous?.status==='running'&&previous.backupReportPath&&await exists(previous.backupReportPath)&&(await json(previous.backupReportPath)).status!=='complete')restart=true;
    if(!previous||restart){if(previous){const old=batch.slices.find(slice=>slice.sliceId===previous.sliceId);if(old&&!['complete','failed'].includes(old.status))old.status='cancelled';}const id=randomUUID();batch.flow.historyValidation={status:'running',stage:'frozen',planHash:plan.planHash,plan,sliceId:id,artifactDirectory:path.join(batch.artifactRoot,'h-'+id.replaceAll('-','').slice(0,12)),previousAttempts:previous?[...(previous.previousAttempts??[]),{...previous,previousAttempts:undefined}]:[]};}
