@@ -15,12 +15,18 @@ async function fixture(t){const root=await mkdtemp(path.join(os.tmpdir(),'organi
 function delayedRead(store){let next=false;const captured=deferred(),release=deferred();return {store:{...store,get:async(...args)=>{const result=await store.get(...args);if(next){next=false;captured.resolve();await release.promise;}return result;}},pause:()=>{next=true;},captured:captured.promise,release:release.resolve};}
 async function settled(store,id,key){for(let n=0;n<100;n++){const batch=await store.get(id);if(batch.flow[key].status!=='running'){await new Promise(resolve=>setImmediate(resolve));return batch;}await new Promise(resolve=>setTimeout(resolve,1));}assert.fail('后台任务未完成');}
 
-test('读取校验尚未结束时同进程原子替换必须等待，旧 inode 不会被误判为链接',async t=>{
- const f=await fixture(t),file=path.join(f.store.directory,f.batch.batchId+'.json'),entered=deferred(),release=deferred();
+for(const alias of process.platform==='win32'?[false,true]:[false])test(`读取校验尚未结束时同进程原子替换必须等待，旧 inode 不会被误判为链接（路径别名=${alias}）`,async t=>{
+ const f=await fixture(t),canonicalDirectory=await fs.realpath(f.store.directory);
+ // Windows CI 的 TEMP 可能含 8.3 短名；读取器使用 realpath，屏障必须匹配同一规范路径。
+ // 大小写别名无需依赖磁盘启用 8.3，也能明确复现输入路径与真实路径不同的情形。
+ if(alias){f.store=createBatchStore({stateDirectory:path.join(canonicalDirectory,'..','STATE')});assert.notEqual(f.store.directory,canonicalDirectory);assert.equal(await fs.realpath(f.store.directory),canonicalDirectory);}
+ const file=path.join(canonicalDirectory,f.batch.batchId+'.json'),entered=deferred(),release=deferred();
  const stat=fs.lstat;let pause=true,writing=false;
  t.mock.method(fs,'lstat',async(...args)=>{const result=await stat(...args);if(args[0]===file&&pause){pause=false;entered.resolve();await release.promise;return writing?Object.assign(result,{nlink:0}):result;}return result;});syncBuiltinESMExports();
  t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
- const reading=f.store.get(f.batch.batchId);reading.catch(()=>{});await entered.promise;
+ const reading=f.store.get(f.batch.batchId);
+ // 未命中屏障时明确失败，不能留下永远等待、导致其余测试一起取消的 Promise。
+ await Promise.race([entered.promise,reading.then(()=>assert.fail('读取已结束但未触发文件校验屏障'))]);
  const update=createBatchStore({stateDirectory:f.store.directory}).update(f.batch.batchId,f.batch.revision,record=>{writing=true;return {...record,phase:'complete'};});
  await Promise.race([update,new Promise(resolve=>setTimeout(resolve,40))]);release.resolve();
  const observed=await reading;assert.equal(observed.revision,1);await update;
