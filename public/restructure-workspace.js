@@ -4,7 +4,8 @@ import {reviewReason} from './bulk-review.js';
 
 // 树版本参与草稿身份，避免分类调整后悄悄沿用旧节点选择。
 export function restructureDraft(source,current,treeRevision){
- if(current?.hash!==source.hash||current?.treeRevision!==treeRevision)return {hash:source.hash,treeRevision,name:source.confirmedName??source.analysis?.suggestion??'',nodeId:source.proposedNodeId??'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
+ if(current?.hash!==source.hash||current?.treeRevision!==treeRevision)return {hash:source.hash,treeRevision,...(source.reviewVersion?{reviewVersion:source.reviewVersion}:{}),name:source.confirmedName??source.analysis?.suggestion??'',nodeId:source.proposedNodeId??'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
+ if((current.reviewVersion??0)!==(source.reviewVersion??0)){current.selected=false;current.reviewVersion=source.reviewVersion??0;if(source.reviewResetCategory)current.nodeId=source.proposedNodeId??'';}
  return current;
 }
 export async function mountRestructureWorkspace(host,batchId){

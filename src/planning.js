@@ -227,6 +227,13 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(saved.file, saved.data);
       return saved.data.evolution;
     }),
+    invalidateReview: input => serial(async () => {
+      const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];
+      if(!entry)return;
+      delete entry.frozenPlan;entry.reviewRequired=true;
+      if(input.clearClassification)delete entry.classification;
+      await persist(saved.file,saved.data);
+    }),
     list: input => serial(async () => (await state(input.sourceRoot, input.libraryPath)).data),
   };
 }

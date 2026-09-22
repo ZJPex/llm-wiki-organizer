@@ -4,8 +4,10 @@ import {submitHistoryPlan,renderHistoryActions} from './history-actions.js';
 const editable=source=>source.analysis&&!source.analysis.uncertain&&source.classification&&!['excluded','succeeded','blocked','reviewed'].includes(source.status);
 const selectable=source=>editable(source)||(source.status==='reviewed'&&source.analysis&&!source.analysis.uncertain&&source.classification);
 export function reconcileReviewDraft(source,current){
- if(current?.hash!==source.hash)current={hash:source.hash,name:'',category:'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
- if(!current.manual){current.name=source.confirmedName??source.suggestion??'';current.category=source.classification?.category??'';}
+ if(current?.hash!==source.hash)current={hash:source.hash,reviewVersion:source.reviewVersion??0,name:'',category:'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
+ if((current.reviewVersion??0)!==(source.reviewVersion??0)){current.selected=false;if(source.reviewResetCategory){current.category='';current.categoryManual=false;}current.reviewVersion=source.reviewVersion??0;}
+ if(!(current.nameManual??current.manual))current.name=source.confirmedName??source.suggestion??'';
+ if(!(current.categoryManual??current.manual))current.category=source.classification?.category??'';
  return current;
 }
 export async function mountReviewWorkspace(host,batchId){
@@ -60,8 +62,8 @@ export async function mountReviewWorkspace(host,batchId){
   const table=element('table'),head=element('thead'),headRow=element('tr');for(const title of ['选择','原名称','新名称','主分类','状态'])headRow.append(element('th',title));head.append(headRow);table.append(head);const body=element('tbody');
   for(const source of visible){const d=draft(source),row=element('tr');row.setAttribute('aria-selected',String(focus===source.sourceId));row.onclick=()=>{focus=source.sourceId;for(const other of body.rows)other.setAttribute('aria-selected',String(other===row));showDetail(source);};
    const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&selectable(source);checkbox.disabled=!selectable(source)||busy||unsafe();checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;saveDrafts();render();};const cell=element('td');cell.append(checkbox);
-   const name=element('input');name.value=d.name;name.disabled=!editable(source)||!!source.confirmedName||unsafe();name.setAttribute('aria-label','新名称 '+source.identity);name.oninput=()=>{d.name=name.value;d.manual=true;saveDrafts();showDetail(source);};
-   const categoryInput=element('input');categoryInput.value=d.category;categoryInput.disabled=!editable(source)||unsafe();categoryInput.setAttribute('aria-label','主分类 '+source.identity);categoryInput.setAttribute('list','category-options-'+source.sourceId);const data=element('datalist');data.id='category-options-'+source.sourceId;for(const value of source.classification?.options??[]){const o=element('option');o.value=value;data.append(o);}categoryInput.oninput=()=>{d.category=categoryInput.value;d.manual=true;saveDrafts();showDetail(source);};
+   const name=element('input');name.value=d.name;name.disabled=!editable(source)||!!source.confirmedName||unsafe();name.setAttribute('aria-label','新名称 '+source.identity);name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();showDetail(source);};
+   const categoryInput=element('input');categoryInput.value=d.category;categoryInput.disabled=!editable(source)||unsafe();categoryInput.setAttribute('aria-label','主分类 '+source.identity);categoryInput.setAttribute('list','category-options-'+source.sourceId);const data=element('datalist');data.id='category-options-'+source.sourceId;for(const value of source.classification?.options??[]){const o=element('option');o.value=value;data.append(o);}categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();showDetail(source);};
    const nameCell=element('td'),categoryCell=element('td');nameCell.append(name);categoryCell.append(categoryInput,data);row.append(cell,element('td',source.identity),nameCell,categoryCell,element('td',statusName(source.status)+(d.manual?' · 已手改':'')));body.append(row);
   }table.append(body);tableHost.replaceChildren(table);showDetail(visible.find(s=>s.sourceId===focus));
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
