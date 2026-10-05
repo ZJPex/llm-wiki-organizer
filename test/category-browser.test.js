@@ -20,7 +20,7 @@ test('分类按实际路径逐级展开，根材料独立可读，分页累计�
  const location=p.content.querySelector('details');assert.notEqual(location.open,true);location.open=true;assert.match(location.textContent,/\/a\/raw\/sources/);
  await p.button('加载更多材料').click();assert.match(p.content.textContent,/已显示 53.*共 53/);assert.equal(p.content.querySelectorAll('article').length,53);
  const expand=p.tree.querySelectorAll('button').find(b=>b.getAttribute('aria-label')==='展开 900 实际父级');await expand.click();assert.equal(expand.getAttribute('aria-expanded'),'true');
- await p.button('100.20 子类').click();assert.match(p.content.textContent,/真实说明/);assert.match(p.content.textContent,/此分类暂无 Markdown 材料/);
+ await p.button('100.20 子类').click();assert.equal(p.content.querySelector('h1').textContent,'子类');assert.equal(p.content.querySelector('[aria-label="分类编号"]').textContent,'100.20');assert.match(p.content.textContent,/真实说明/);assert.match(p.content.textContent,/此分类暂无 Markdown 材料/);
  assert.equal(p.calls.at(-1).input.category,'900 实际父级/100.20 子类');
  assert.equal(p.calls.every(c=>c.url==='/api/workspace/categories'),true);
 });
