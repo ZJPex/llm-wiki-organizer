@@ -43,3 +43,11 @@ test('分页失败保留已加载材料可重试，空页不能伪装空分类�
  await p.button('重试加载').click();assert.equal(p.content.querySelectorAll('article').length,51);
  await p.button('空分类').click();assert.match(p.content.textContent,/本页未返回材料/);assert.doesNotMatch(p.content.textContent,/此分类暂无/);
 });
+
+test('键盘选分类后焦点保留，材料分页不移除未变化目录中的焦点',async t=>{
+ const p=await page(t,input=>({categories:catalog,files:[{name:'文件.md',path:'/a/file.md'}],total:2,nextCursor:input.cursor?null:1}));
+ await p.browser.open('');const category=p.button('空分类');category.focus();await category.click();
+ assert.equal(p.document.activeElement===p.button('空分类'),true);
+ assert.ok(p.tree.querySelectorAll('button').includes(p.document.activeElement));
+ await p.button('加载更多材料').click();assert.equal(p.document.activeElement===p.button('空分类'),true);
+});

@@ -4,7 +4,7 @@ import {reportStatus,reportSummary} from './report-ui.js';
 export const taskUrl=batch=>`/?batchId=${encodeURIComponent(batch.batchId)}`;
 const reportUrl=batch=>'/task-report?batchId='+encodeURIComponent(batch.batchId);
 const link=(label,url,primary=false)=>{const node=element('a',label);node.href=url;node.className=primary?'button primary':'button';return node;};
-const key=value=>value.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();
+export const libraryPathKey=value=>value.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();
 const finished=batch=>batch.report?.status==='complete';
 const title=batch=>`${batch.mode==='inbox'?'日常整理':'首次重构'} · ${new Date(batch.createdAt??batch.updatedAt).toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'})}`;
 function state(batch){
@@ -55,7 +55,7 @@ export function createTaskHome({tasks,featured,more,getLibrary}){
   if(append){if(recordLibrary===getLibrary()?.id){visible+=25;render();}return;}
   this.clear();visible=25;const library=getLibrary();if(!library?.valid){this.clear(library?'设置已失效，请先修正知识库设置。':'尚未配置知识库，请先保存设置。');return;}
   const current= generation;const all=[];let cursor=0;
-  try{do{const page=await requestBatch('list',{cursor,limit:50});if(current!==generation||getLibrary()?.id!==library.id)return;all.push(...page.records.filter(batch=>key(batch.libraryPath)===key(library.libraryPath)));cursor=page.nextCursor;}while(cursor!==null);
+  try{do{const page=await requestBatch('list',{cursor,limit:50});if(current!==generation||getLibrary()?.id!==library.id)return;all.push(...page.records.filter(batch=>libraryPathKey(batch.libraryPath)===libraryPathKey(library.libraryPath)));cursor=page.nextCursor;}while(cursor!==null);
    recordLibrary=library.id;records=all.sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt)||(a.batchId<b.batchId?-1:a.batchId>b.batchId?1:0));render();
   }catch(error){if(current!==generation)return;this.clear('任务加载失败，请点击刷新重试。');throw error;}
  }};
