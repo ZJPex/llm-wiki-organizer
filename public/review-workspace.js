@@ -16,8 +16,8 @@ export function reviewAnalysisActions(batch){
  return (batch.analysisJob?.allowedActions??[]).filter(action=>action!=='startAnalysis'||(batch.analysisProgress?.remaining??0)>0||(batch.classificationProgress?.remaining??0)>0);
 }
 export async function mountReviewWorkspace(host,batchId){
- let batch,rows=[],focus=null,page=0,category='',query='',status='',busy=false,paused=false,busyMessage='',detailsOpen=false,detailTrigger;
- const unsafe=()=>batch?.report?.status==='needs-recovery'||!!batch?.historyApplication&&batch.historyApplication.status!=='complete';
+ let batch,rows=[],focus=null,page=0,category='',query='',status='',busy=false,paused=false,busyMessage='',detailsOpen=false,detailTrigger,readRequired=false;
+ const unsafe=()=>readRequired||batch?.report?.status==='needs-recovery'||!!batch?.historyApplication&&batch.historyApplication.status!=='complete';
  const storageKey='organizer-review:'+batchId;
  let drafts={};try{drafts=JSON.parse(sessionStorage.getItem(storageKey)??'{}');}catch{}
  const saveDrafts=()=>sessionStorage.setItem(storageKey,JSON.stringify(drafts));
@@ -35,7 +35,9 @@ export async function mountReviewWorkspace(host,batchId){
  const tableHost=element('div');tableHost.className='review-items';
  const reading=element('section');reading.className='review-reading';reading.setAttribute('aria-label','当前材料阅读');
  const detail=element('section');detail.className='review-detail';detail.setAttribute('aria-label','材料证据详情');detail.hidden=true;
- const pager=element('nav');pager.setAttribute('aria-label','材料分页');const footer=element('div');footer.className='review-footer';
+ const pager=element('nav');pager.setAttribute('aria-label','材料分页');const footer=element('div');footer.className='review-footer';footer.setAttribute('aria-label','批量归档操作');
+ const scope=element('details');scope.className='review-bulk-scope';
+ const updateScope=()=>{scope.replaceChildren(element('summary','核对目标知识库与最终位置'),element('p','当前知识库：'+batch.libraryPath));for(const source of rows.filter(s=>draft(s).selected&&selectable(s))){const d=draft(source);scope.append(element('p',source.identity+' → '+(source.status==='reviewed'&&source.targetPath?source.targetPath:[batch.libraryPath,'raw/sources',d.category,d.name].filter(Boolean).join('/'))));}};
  const queueActions=element('div');queueActions.className='review-queue-actions';
  const queueHeading=element('div');queueHeading.className='review-queue-heading';queueHeading.append(element('h2','日常整理'),notice);
  const queueTools=element('div');queueTools.className='review-queue-tools';const queueSafety=element('div');queueSafety.className='review-queue-safety';
@@ -45,11 +47,11 @@ export async function mountReviewWorkspace(host,batchId){
  const invalidations=element('section');invalidations.setAttribute('aria-label','材料变化与重审');
  queueTools.append(controls,invalidations);root.append(error,results,grid,history,footer);
  const button=(label,action,disabled=false)=>{const b=element('button',label);b.disabled=disabled||busy;b.onclick=()=>run(action,label);return b;};
- async function run(fn,label){if(busy)return;busy=true;busyMessage=label==='确认并归档所选材料'?'正在校验并归档所选材料，请稍候；无需重复点击。':'正在处理，请稍候。';error.textContent='';try{render();await fn();}catch(e){error.textContent=e.message;try{await load();}catch{}}finally{busy=false;busyMessage='';render();}}
+ async function run(fn,label){if(busy)return;busy=true;busyMessage=label==='确认并归档所选材料'?'正在校验并归档所选材料，请稍候；无需重复点击。':'正在处理，请稍候。';error.textContent='';try{render();await fn();}catch(e){readRequired=true;error.textContent=e.message;try{await load();}catch{error.textContent+='。未能读取最新状态，请先刷新建议核对结果，不能重复执行。';}}finally{busy=false;busyMessage='';render();}}
  async function load(){
   const result=await requestBatch('get',{batchId,limit:50});let all=[...result.sources],cursor=result.nextCursor;
   while(cursor!==null){const next=await requestBatch('get',{batchId,cursor,limit:50});if(next.revision!==result.revision){notice.textContent='后台正在更新，稍后刷新完整范围';return;}all.push(...next.sources);cursor=next.nextCursor;}
-  batch=result;rows=all;for(const source of rows)draft(source);saveDrafts();render();
+  readRequired=false;batch=result;rows=all;for(const source of rows)draft(source);saveDrafts();render();
  }
  const filtered=()=>rows.filter(source=>(!category||((source.classification?.category??'')===category || (category==='@root'&&source.classification?.category==='')))&&(!status||source.status===status)&&(!query||(source.identity+' '+draft(source).name).toLowerCase().includes(query.toLowerCase())));
  function showDetail(source){
@@ -91,8 +93,8 @@ export async function mountReviewWorkspace(host,batchId){
   const nameLabel=element('label','建议文件名');nameLabel.append(name);const categoryLabel=element('label','建议分类');categoryLabel.append(categoryInput,data);
   const rootCategory=element('button','Raw 根目录');rootCategory.disabled=categoryInput.disabled;rootCategory.onclick=()=>{categoryInput.value='';categoryInput.oninput();};categoryLabel.append(rootCategory);fields.append(nameLabel,categoryLabel);
   const original=element('p','原文件名：'+source.identity);original.className='review-original';
-  name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=d.name||source.identity;state.textContent=statusName(source.status)+' · 已手改';showDetail(source);};
-  categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=statusName(source.status)+' · 已手改';showDetail(source);};
+  name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=d.name||source.identity;state.textContent=statusName(source.status)+' · 已手改';showDetail(source);updateScope();};
+  categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=statusName(source.status)+' · 已手改';showDetail(source);updateScope();};
   const evidence=element('div');evidence.className='review-evidence';evidence.append(element('p','摘要与证据'),element('h3','摘要'),element('p',source.analysis?.summary||'尚无摘要'),element('h3','原文证据'));
   if(!source.analysis?.evidence?.length)evidence.append(element('p','尚无原文证据'));
   for(const quote of source.analysis?.evidence??[])evidence.append(element('blockquote',quote));
@@ -105,7 +107,7 @@ export async function mountReviewWorkspace(host,batchId){
   if(!batch)return;
   const completed=batch.report?.status==='complete'&&batch.flow.newArchive;
   notice.textContent=busy?busyMessage:completed?`归档成功，共 ${batch.report.counts.succeeded} 份材料。${reportSummary(batch.report)}。`:batch.report?.hasExecution?`${reportStatus(batch.report.status)}。${reportSummary(batch.report)}。`:`${batch.report?reportStatus(batch.report.status):statusName(batch.phase)}`;
-  controls.replaceChildren();for(const action of reviewAnalysisActions(batch))controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();}));
+  controls.replaceChildren();for(const action of reviewAnalysisActions(batch))controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();},readRequired));
   controls.append(button('刷新建议',load));const legacy=element('a','执行与恢复入口');legacy.href='/task-report?batchId='+encodeURIComponent(batchId);controls.append(legacy);
   (reviewAnalysisActions(batch).length?queueSafety:queueTools).prepend(controls);
   const options=(select,values,value,label)=>{select.replaceChildren();const first=element('option',label);first.value='';select.append(first);for(const [key,text] of values){const option=element('option',text);option.value=key;select.append(option);}select.value=value;};
@@ -126,14 +128,17 @@ export async function mountReviewWorkspace(host,batchId){
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
   const alreadyValidated=batch.historyValidation?.status==='awaiting-apply'&&selected.length===batch.historyPlan?.selectedCount&&selected.every(s=>s.selected&&s.status==='reviewed'&&draft(s).name===s.confirmedName&&draft(s).category===s.classification?.category);
   const pureNew=selected.every(s=>s.ingestStatus==='new'&&!s.directoryDependency);
-  const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.onchange=()=>{paused=pause.checked;render();};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
+  const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.disabled=busy;pause.onchange=()=>{paused=pause.checked;render();};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
   queueActions.replaceChildren(button('选择整批正常建议',()=>{for(const s of rows)if(selectable(s)&&!s.directoryDependency&&s.classification?.category!==null&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}));
-  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨页，包含隐藏筛选项）；未选中项保留。`),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!selected.length||alreadyValidated||unsafe()||batch.historyValidation?.status==='running'));
-  footer.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
+  footer.hidden=selected.length===0;
+  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨全部页面，包含隐藏筛选项）；未选中项保留。`),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!paused||!selected.length||alreadyValidated||unsafe()||batch.historyValidation?.status==='running'));
+  updateScope();footer.prepend(scope,pauseLabel);
   renderHistoryActions(history,{batch,writersPaused:paused,run,refresh:load});
-  renderInvalidations(invalidations,{batch:{...batch,sources:rows,busy},run,refresh:load});
+  if(footer.hidden&&batch.historyValidation)history.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
+  if(busy||readRequired)for(const control of history.querySelectorAll('button'))control.disabled=true;
+  renderInvalidations(invalidations,{batch:{...batch,sources:rows,busy:busy||readRequired},run,refresh:load});
   (unsafe()||batch.invalidations?queueSafety:queueTools).append(invalidations);
-  results.replaceChildren();results.hidden=!batch.report?.hasExecution;if(batch.report?.hasExecution){results.append(element('p',reportSummary(batch.report)));const reportLink=element('a','查看整批结果、保留原因与恢复证据');reportLink.href='/task-report?batchId='+encodeURIComponent(batchId);results.append(reportLink);}
+  results.replaceChildren();results.hidden=!(batch.report?.hasExecution||['partial','failed','retained','needs-recovery'].includes(batch.report?.status));if(!results.hidden){results.append(element('h2',reportStatus(batch.report.status)),element('p',reportSummary(batch.report)));const reportLink=element('a','查看整批结果、保留原因与恢复证据');reportLink.href='/task-report?batchId='+encodeURIComponent(batchId);results.append(reportLink);}
  }
  search.oninput=()=>{query=search.value;page=0;render();};categoryFilter.onchange=()=>{category=categoryFilter.value;page=0;render();};statusFilter.onchange=()=>{status=statusFilter.value;page=0;render();};
  await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&!(root.contains(document.activeElement)&&['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName))&&(['running','pausing'].includes(batch?.analysisJob?.status)||batch?.historyValidation?.status==='running'||batch?.historyApplication?.status==='running'))run(load);},2000);
