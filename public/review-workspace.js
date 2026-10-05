@@ -4,6 +4,9 @@ import {submitHistoryPlan,renderHistoryActions} from './history-actions.js';
 import {renderInvalidations} from './invalidation-ui.js';
 const editable=source=>source.analysis&&!source.analysis.uncertain&&source.classification&&!['excluded','succeeded','blocked','reviewed'].includes(source.status);
 const selectable=source=>editable(source)||(source.status==='reviewed'&&source.analysis&&!source.analysis.uncertain&&source.classification);
+const normalSuggestion=source=>selectable(source)&&source.classification?.category!==null&&!source.directoryDependency&&!source.categoryConfirmationError&&(!source.evolution||source.evolution.status==='confirmed');
+const readingStatus=source=>normalSuggestion(source)?'可审核':['succeeded','excluded'].includes(source.status)?statusName(source.status):'待处理';
+const readingTitle=name=>name.replace(/\.md$/i,'');
 export function reconcileReviewDraft(source,current){
  if(current?.hash!==source.hash)current={hash:source.hash,reviewVersion:source.reviewVersion??0,name:'',category:'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
  if((current.reviewVersion??0)!==(source.reviewVersion??0)){current.selected=false;if(source.reviewResetCategory){current.category='';current.categoryManual=false;}current.reviewVersion=source.reviewVersion??0;}
@@ -84,8 +87,9 @@ export async function mountReviewWorkspace(host,batchId){
   const navigate=(label,offset)=>{const b=element('button',label);b.disabled=!visible[position+offset];b.onclick=()=>{focus=visible[position+offset].sourceId;render();};return b;};
   detailTrigger=element('button','详情');detailTrigger.setAttribute('aria-expanded',String(detailsOpen));detailTrigger.setAttribute('aria-controls','review-evidence-details');detailTrigger.onclick=()=>{detailsOpen=!detailsOpen;detailTrigger.setAttribute('aria-expanded',String(detailsOpen));showDetail(source);if(detailsOpen)detail.querySelector('button').focus();};detail.id='review-evidence-details';
   navigation.append(navigate('上一篇',-1),navigate('下一篇',1),detailTrigger);heading.append(breadcrumb,navigation);
-  const title=element('h2',d.name||source.currentIdentity||source.identity);title.className='review-title';
-  const state=element('p',statusName(source.status)+(d.manual?' · 已手改':''));state.className='review-item-state';
+  const title=element('h2',readingTitle(d.name||source.currentIdentity||source.identity));title.className='review-title';
+  const state=element('span',readingStatus(source)+(d.manual?' · 已手改':''));state.className='review-item-state';state.setAttribute('data-warning',String(!normalSuggestion(source)));
+  const titleRow=element('div');titleRow.className='review-title-row';titleRow.append(title,state);
   const fields=element('div');fields.className='review-fields';
   const name=element('input');name.value=d.name;name.disabled=!editable(source)||!!source.confirmedName||unsafe()||busy;name.setAttribute('aria-label','新名称 '+source.identity);
   const categoryInput=element('input');categoryInput.value=d.category;categoryInput.disabled=!editable(source)||unsafe()||busy;categoryInput.setAttribute('aria-label','主分类 '+source.identity);categoryInput.setAttribute('list','category-options-'+source.sourceId);
@@ -93,12 +97,12 @@ export async function mountReviewWorkspace(host,batchId){
   const nameLabel=element('label','建议文件名');nameLabel.append(name);const categoryLabel=element('label','建议分类');categoryLabel.append(categoryInput,data);
   const rootCategory=element('button','Raw 根目录');rootCategory.disabled=categoryInput.disabled;rootCategory.onclick=()=>{categoryInput.value='';categoryInput.oninput();};categoryLabel.append(rootCategory);fields.append(nameLabel,categoryLabel);
   const original=element('p','原文件名：'+source.identity);original.className='review-original';
-  name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=d.name||source.identity;state.textContent=statusName(source.status)+' · 已手改';showDetail(source);updateScope();};
-  categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=statusName(source.status)+' · 已手改';showDetail(source);updateScope();};
+  name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=readingTitle(d.name||source.identity);state.textContent=readingStatus(source)+' · 已手改';showDetail(source);updateScope();};
+  categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=readingStatus(source)+' · 已手改';showDetail(source);updateScope();};
   const evidence=element('div');evidence.className='review-evidence';evidence.append(element('p','摘要与证据'),element('h3','摘要'),element('p',source.analysis?.summary||'尚无摘要'),element('h3','原文证据'));
   if(!source.analysis?.evidence?.length)evidence.append(element('p','尚无原文证据'));
   for(const quote of source.analysis?.evidence??[])evidence.append(element('blockquote',quote));
-  reading.append(heading,title,state,fields,original);
+  reading.append(heading,titleRow,fields,original);
   const warnings=[source.warning,source.skipReason,source.categoryConfirmationError,source.directoryDependency?'涉及目录调整，请在详情中核对影响及阻断原因':null,source.evolution?'存在目录调整方案，请在详情中审核':null,...(source.evolution?.operations??[]).map(op=>op.problem)].filter(Boolean);
   if(warnings.length){const issues=element('div');issues.className='review-warnings';issues.setAttribute('role','note');for(const message of warnings)issues.append(element('p',message));reading.append(issues);}
   reading.append(evidence,detail);showDetail(source);
@@ -119,9 +123,12 @@ export async function mountReviewWorkspace(host,batchId){
   for(const source of visible){const d=draft(source),row=element('div');row.className='review-queue-item';row.setAttribute('data-current',String(focus===source.sourceId));
    const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&selectable(source);checkbox.disabled=!selectable(source)||busy||unsafe();checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;saveDrafts();render();};
    const open=element('button');open.className='review-open';open.setAttribute('aria-label','阅读 '+source.identity);open.setAttribute('aria-current',String(focus===source.sourceId));
+   const icon=element('span');icon.className='review-file-icon';icon.setAttribute('aria-hidden','true');
    const name=element('span',d.name||source.identity);name.className='review-queue-name';
-   const caption=element('small',(d.category||'Raw 根目录')+' · '+statusName(source.status)+(d.manual?' · 已手改':'')+(source.directoryDependency||source.evolution?' · 目录调整':'')+(source.categoryConfirmationError?' · 分类待处理':''));
-   open.append(name,caption);open.onclick=()=>{focus=source.sourceId;render();};row.append(checkbox,open);tableHost.append(row);
+   const shortCategory=d.category.split(/[\\/]/).filter(Boolean).at(-1)||'Raw 根目录';
+   const caption=element('small',shortCategory+(d.manual?' · 已手改':'')+(source.directoryDependency||source.evolution?' · 目录调整':'')+(!normalSuggestion(source)?' · '+(source.categoryConfirmationError||source.warning||source.skipReason||statusName(source.status)):''));
+   const badge=element('span',readingStatus(source));badge.className='review-queue-badge';badge.setAttribute('data-warning',String(!normalSuggestion(source)));
+   open.append(icon,name,caption,badge);open.onclick=()=>{focus=source.sourceId;render();};row.append(checkbox,open);tableHost.append(row);
   }
   if(!visible.length)tableHost.append(element('p','没有符合条件的材料'));
   showReading(visible.find(s=>s.sourceId===focus),visible);
