@@ -19,9 +19,11 @@ test('外部收件箱创建任务不读取无关 Wiki 正文，库内材料仍�
  await fs.writeFile(path.join(raw,'old.md'),'旧材料');
  await fs.writeFile(path.join(raw,'linked.md'),'缺少缓存但存在关联的材料');
  await fs.writeFile(path.join(wiki,'page.md'),'---\nsources: ["linked.md"]\n---\n既有知识正文');
+ // 业务入口会解析真实路径，监测也使用同一目录的真实位置，避免 Windows 别名漏计。
+ const observedWiki=await fs.realpath(wiki);
  const originalRead=fs.readFile;let wikiReads=0;
  t.mock.method(fs,'readFile',async(file,...args)=>{
-  if(String(file).startsWith(wiki+path.sep))wikiReads++;
+  if(String(file).startsWith(observedWiki+path.sep))wikiReads++;
   return originalRead(file,...args);
  });
  syncBuiltinESMExports();

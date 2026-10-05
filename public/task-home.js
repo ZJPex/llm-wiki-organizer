@@ -14,7 +14,8 @@ function state(batch){
  if(['running','pausing','paused','interrupted','failed'].includes(job))return {label:({running:'正在分析',pausing:'正在暂停',paused:'已暂停',interrupted:'分析中断',failed:'分析失败'})[job],action:'继续任务',url:taskUrl(batch),tone:job==='failed'?'warning':'neutral'};
  if(batch.flow?.tree?.status==='proposed'||batch.flow?.tree?.status==='stale')return {label:batch.flow.tree.status==='stale'?'分类树需要重审':'分类树待审核',action:'审核分类树',url:taskUrl(batch)};
  if(report&&report.status!=='pending')return {label:reportStatus(report.status),action:report.status==='failed'?'查看报告':'继续任务',url:report.status==='failed'?reportUrl(batch):taskUrl(batch),tone:'warning'};
- return {label:batch.phase==='file-review'?'待审核':statusName(batch.phase),action:batch.phase==='file-review'?'继续审核':'继续任务',url:taskUrl(batch)};
+ const reviewable=batch.phase==='file-review'||(batch.mode==='inbox'&&batch.phase==='analysis-complete'&&((batch.counts.classified??0)+(batch.counts.reviewed??0)>0));
+ return {label:reviewable?'待审核':statusName(batch.phase),action:reviewable?'继续审核':'继续任务',url:taskUrl(batch)};
 }
 function progress(batch){
  if(batch.report?.hasExecution)return reportSummary(batch.report);
