@@ -41,6 +41,8 @@ class PageElement {
    if(this.tagName==='SELECT'&&node._selected)this.selectedIndex=this.children.indexOf(node);
   }
  }
+ prepend(...nodes){const text=this._text;this.replaceChildren(...nodes,...(text?[text]:[]),...this.childNodes);}
+ focus(){this.ownerDocument.activeElement=this;}
  after(...nodes){
   const parent=this.parentNode;if(!parent)return;
   let position=parent.childNodes.indexOf(this)+1;

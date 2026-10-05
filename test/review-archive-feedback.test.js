@@ -4,8 +4,7 @@ import {createInboxDocument} from './helpers/page-dom.js';
 import {mountReviewWorkspace} from '../public/review-workspace.js';
 
 test('确认归档立即显示等待并禁止重复提交，完成后顶部明确显示归档成功',async t=>{
- const document=createInboxDocument(),create=document.createElement;
- document.createElement=tag=>{const node=create(tag);node.prepend=(...nodes)=>node.replaceChildren(...nodes,...node.childNodes);return node;};
+ const document=createInboxDocument();
  for(const [key,value] of Object.entries({document,sessionStorage:{getItem:()=>null,setItem:()=>{}}})){
   const old=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});
   t.after(()=>{if(old)Object.defineProperty(globalThis,key,old);else delete globalThis[key];});
@@ -23,7 +22,7 @@ test('确认归档立即显示等待并禁止重复提交，完成后顶部明�
  const host=document.createElement('main');document.body.append(host);await mountReviewWorkspace(host,'test');
  const button=text=>host.querySelectorAll('button').find(node=>node.textContent===text);
  await button('选择整批正常建议').click();
- const pause=host.querySelectorAll('input').find(node=>node.parentNode.tagName==='LABEL');pause.checked=true;await pause.dispatchEvent({type:'change'});
+ const pause=host.querySelectorAll('input').find(node=>node.type==='checkbox'&&node.parentNode.textContent.includes('我已暂停'));pause.checked=true;await pause.dispatchEvent({type:'change'});
  const pending=button('确认并归档所选材料').click();
  await document.waitFor(()=>requests===1);
  const waitingText=host.querySelector('[role="status"]').textContent;
