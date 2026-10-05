@@ -92,3 +92,15 @@ test('未配置和失效设置不能创建任务或列出其他库任务',async 
  assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
  assert.equal(p.$('settings').hidden,false);
 });
+
+test('日常分析完成且已有可审核建议时，首页和列表显示待审核并仅导航继续审核',async t=>{
+ const ready={...batch('ready','/a','2026-10-05'),phase:'analysis-complete',analysisJob:{status:'complete'},counts:{total:12,classified:11,'needs-information':1}};
+ const p=await page(t,{pages:[{records:[ready],nextCursor:null}]});
+ await p.document.waitFor(()=>p.$('tasks').querySelectorAll('a').length===2);
+ assert.match(p.$('featured').textContent,/待审核/);
+ assert.equal(p.$('featured').querySelector('a').textContent,'继续审核');
+ assert.equal(p.$('featured').querySelector('a').href,'/?batchId=ready');
+ assert.equal(p.$('tasks').querySelector('a').textContent,'继续审核');
+ assert.match(p.$('tasks').textContent,/11 份可审核/);
+ assert.equal(p.calls.some(call=>/analyze|confirm|apply/.test(call.url)),false);
+});
