@@ -8,6 +8,19 @@ import {createPlanningService} from '../src/planning.js';
 import {createInboxStrategy} from '../src/inbox.js';
 import {createBatchService} from '../src/batches.js';
 import {createApp} from '../src/server.mjs';
+import fs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
+
+test('归档反链检查不读取非 Markdown 索引正文，仍完成真实归档',async t=>{
+ const f=await fixture(t),index=path.join(f.libraryPath,'.llm-wiki','large-index.bin');
+ await writeFile(index,Buffer.alloc(1024*1024));
+ const read=fs.readFile;let indexReads=0;
+ t.mock.method(fs,'readFile',async(file,...args)=>{if(String(file)===index)indexReads++;return read(file,...args);});
+ syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+ const result=await f.call('confirmNewArchive',{requestId:'io-regression',writersPaused:true,items:[f.item('a','archived')]});
+ assert.equal(result.flow.newArchive.counts.succeeded,1);
+ assert.equal(indexReads,0,'反链检查只需要 Markdown 内容，不应读取索引或附件正文');
+});
 
 async function fixture(t,{checkpoint,internal=false}={}){
  const f=await migrationFixture(t),libraryPath=f.backup.originalPath,sourceRoot=internal?path.join(libraryPath,'raw/sources'):path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts'),wikiSourcePath=path.join(f.root,'upstream'),configPath=path.join(f.root,'config.json');

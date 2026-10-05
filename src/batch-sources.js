@@ -14,7 +14,10 @@ export async function discoverSources({libraryPath,sourceRoot,includeIdentities=
  const cache=await read('ingest-cache.json'),ingest=await read('ingest-queue.json'),changes=await read('file-change-queue.json');
  if(!cache.entries||Array.isArray(cache.entries)||!Array.isArray(ingest)||!Array.isArray(changes.tasks))batchFail('UNKNOWN_ASSOCIATION','摄取状态格式无法判定');
  const tasks=[...ingest,...changes.tasks],busy=tasks.some(task=>['pending','processing','running','queued'].includes(task.status));
- const wiki=await inventory(path.join(library,'wiki')),references=[];
+ // 外部收件箱没有 Raw 身份，不参与 Wiki 关联；避免为新增材料读取整库正文。
+ // 根目录包含 Raw 时仍保留扫描，不能漏掉混合范围中的历史材料。
+ const needsWiki=within(raw,root)||within(root,raw);
+ const wiki=needsWiki?await inventory(path.join(library,'wiki')):{files:[]},references=[];
  for(const file of wiki.files.filter(file=>/\.md$/i.test(file.path))){const fm=sourceFrontmatter(await readFile(path.join(library,'wiki',file.path),'utf8'));references.push({path:file.path,hash:file.hash,sources:fm.sources});}
  const baseline=await inventory(root),sources=[];
  const candidates=baseline.files.filter(file=>/\.md$/i.test(file.path));

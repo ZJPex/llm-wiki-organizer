@@ -6,7 +6,6 @@ import {discoverSources,assertSourceAssociation} from './batch-sources.js';
 import {safePath} from './backup.js';
 import {categoryCatalog,planDigest} from './categories.js';
 import {validateName} from './planning.js';
-import {inventory} from './compatibility.js';
 import {localReferences} from './links.js';
 import {selectedEvolution,sourceDirectoryDependency} from './directory-dependencies.js';
 
@@ -51,7 +50,16 @@ async function checkNewLinks(batch,moves){
  const changed=moves.filter(move=>path.resolve(move.from)!==path.resolve(move.to));if(!changed.length)return;
  const documents=new Map();
  const roots=await Promise.all([batch.libraryPath,batch.sourceRoot].map(root=>safePath(root)));
- for(const root of new Set(roots))for(const file of (await inventory(root)).files.filter(file=>/\.md$/i.test(file.path))){const full=path.join(root,file.path);documents.set(key(full),full);}
+ // 反链校验只需要 Markdown 正文，遍历时仍拒绝链接和特殊文件。
+ // 不对索引、附件及其他无关文件读取内容或计算哈希。
+ async function collect(full){
+  const stat=await lstat(full);
+  if(stat.isSymbolicLink())throw new Error('知识库包含符号链接或目录连接，无法检查反链');
+  if(stat.isDirectory()){for(const name of (await readdir(full)).sort())await collect(path.join(full,name));}
+  else if(stat.isFile()){if(/\.md$/i.test(full))documents.set(key(full),full);}
+  else throw new Error('知识库包含不支持的特殊文件');
+ }
+ for(const root of new Set(roots))await collect(root);
  for(const file of documents.values()){
   const references=localReferences(await readFile(file,'utf8'));
   if(changed.some(move=>key(move.from)===key(file))&&references.length)fail('UNSUPPORTED_NEW_LINKS',`新增材料含本地图片或材料链接，当前归档不能证明目标不变，保留原处：${file}`);
