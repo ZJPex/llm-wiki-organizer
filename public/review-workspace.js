@@ -37,11 +37,13 @@ export async function mountReviewWorkspace(host,batchId){
  const detail=element('section');detail.className='review-detail';detail.setAttribute('aria-label','材料证据详情');detail.hidden=true;
  const pager=element('nav');pager.setAttribute('aria-label','材料分页');const footer=element('div');footer.className='review-footer';
  const queueActions=element('div');queueActions.className='review-queue-actions';
- queue.append(element('h2','日常整理'),summary,filters,queueActions,tableHost,pager);grid.append(queue,reading);
+ const queueHeading=element('div');queueHeading.className='review-queue-heading';queueHeading.append(element('h2','日常整理'),notice);
+ const queueTools=element('div');queueTools.className='review-queue-tools';const queueSafety=element('div');queueSafety.className='review-queue-safety';
+ queue.append(queueHeading,summary,filters,queueSafety,queueActions,tableHost,pager,queueTools);grid.append(queue,reading);
  const results=element('section');results.hidden=true;results.setAttribute('aria-label','归档结果');
  const history=element('section');history.setAttribute('aria-label','历史验证与应用');
  const invalidations=element('section');invalidations.setAttribute('aria-label','材料变化与重审');
- root.append(notice,error,results,controls,invalidations,grid,history,footer);
+ queueTools.append(controls,invalidations);root.append(error,results,grid,history,footer);
  const button=(label,action,disabled=false)=>{const b=element('button',label);b.disabled=disabled||busy;b.onclick=()=>run(action,label);return b;};
  async function run(fn,label){if(busy)return;busy=true;busyMessage=label==='确认并归档所选材料'?'正在校验并归档所选材料，请稍候；无需重复点击。':'正在处理，请稍候。';error.textContent='';try{render();await fn();}catch(e){error.textContent=e.message;try{await load();}catch{}}finally{busy=false;busyMessage='';render();}}
  async function load(){
@@ -102,9 +104,10 @@ export async function mountReviewWorkspace(host,batchId){
  function render(){
   if(!batch)return;
   const completed=batch.report?.status==='complete'&&batch.flow.newArchive;
-  notice.textContent=busy?busyMessage:completed?`归档成功，共 ${batch.report.counts.succeeded} 份材料。${reportSummary(batch.report)}。`:batch.report?.hasExecution?`任务 ${batch.batchId} · ${reportStatus(batch.report.status)}。${reportSummary(batch.report)}。`:`任务 ${batch.batchId} · ${batch.report?reportStatus(batch.report.status):statusName(batch.phase)}。请集中审核名称、分类与最终位置。`;
+  notice.textContent=busy?busyMessage:completed?`归档成功，共 ${batch.report.counts.succeeded} 份材料。${reportSummary(batch.report)}。`:batch.report?.hasExecution?`${reportStatus(batch.report.status)}。${reportSummary(batch.report)}。`:`${batch.report?reportStatus(batch.report.status):statusName(batch.phase)}`;
   controls.replaceChildren();for(const action of reviewAnalysisActions(batch))controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();}));
   controls.append(button('刷新建议',load));const legacy=element('a','执行与恢复入口');legacy.href='/task-report?batchId='+encodeURIComponent(batchId);controls.append(legacy);
+  (reviewAnalysisActions(batch).length?queueSafety:queueTools).prepend(controls);
   const options=(select,values,value,label)=>{select.replaceChildren();const first=element('option',label);first.value='';select.append(first);for(const [key,text] of values){const option=element('option',text);option.value=key;select.append(option);}select.value=value;};
   options(categoryFilter,[...new Set(rows.map(s=>s.classification?.category).filter(v=>v!==null&&v!==undefined))].map(v=>[v||'@root',v||'Raw 根目录']),category,'全部分类');
   options(statusFilter,[...new Set(rows.map(s=>s.status))].map(v=>[v,statusName(v)]),status,'全部状态');
@@ -129,6 +132,7 @@ export async function mountReviewWorkspace(host,batchId){
   footer.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
   renderHistoryActions(history,{batch,writersPaused:paused,run,refresh:load});
   renderInvalidations(invalidations,{batch:{...batch,sources:rows,busy},run,refresh:load});
+  (unsafe()||batch.invalidations?queueSafety:queueTools).append(invalidations);
   results.replaceChildren();results.hidden=!batch.report?.hasExecution;if(batch.report?.hasExecution){results.append(element('p',reportSummary(batch.report)));const reportLink=element('a','查看整批结果、保留原因与恢复证据');reportLink.href='/task-report?batchId='+encodeURIComponent(batchId);results.append(reportLink);}
  }
  search.oninput=()=>{query=search.value;page=0;render();};categoryFilter.onchange=()=>{category=categoryFilter.value;page=0;render();};statusFilter.onchange=()=>{status=statusFilter.value;page=0;render();};
