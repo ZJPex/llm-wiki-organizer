@@ -40,6 +40,7 @@ test('公开工作台保存设置、重启复用、发现任务与分类，并�
  const task=await second.request('batches/get',{batchId});assert.equal(task.body.phase,'analysis');
  const categories=await second.request('workspace/categories',{id});assert.ok(categories.body.categories.some(item=>item.path==='001 测试'));assert.ok(categories.body.files.some(item=>item.name==='old.md'));
  assert.equal((await second.request('workspace/categories',{id,category:'../wiki'})).status,400);
+ const homeModule=await fetch(second.base+'/task-home.js');assert.equal(homeModule.status,200);assert.match(homeModule.headers.get('content-type'),/javascript/);
  const index=await(await fetch(second.base+'/')).text();assert.match(index,/分类浏览工作台/);assert.doesNotMatch(index,/示例材料|原型对比/);
  const continuation=await fetch(second.base+'/inbox?batchId='+batchId);assert.equal(continuation.status,200);
  const overlap=await second.request('workspace/save',{...input,artifactRoot:sourceRoot});assert.equal(overlap.body.code,'OVERLAPPING_PATHS');
