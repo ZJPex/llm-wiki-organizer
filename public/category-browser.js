@@ -13,6 +13,8 @@ export function createCategoryBrowser({tree,content,getLibrary}){
  let category='',catalog=[],files=[],next=null,total=0,loading=false,generation=0;
  const expanded=new Set();
  function renderTree(){
+  const active=[...tree.querySelectorAll('button')].includes(document.activeElement)?document.activeElement:null;
+  const focused=active?{path:active.getAttribute('data-category-path'),kind:active.getAttribute('data-category-control')}:null;
   tree.replaceChildren();const nodes=new Map();
   for(const item of catalog){
    const parts=item.path.split('/').filter(Boolean);
@@ -28,17 +30,18 @@ export function createCategoryBrowser({tree,content,getLibrary}){
     const li=element('li'),row=element('div');row.className='category-row';
     let children;
     if(node.children.length){
-     const toggle=element('button',expanded.has(node.path)?'⌄':'›');toggle.type='button';toggle.className='category-toggle';
+     const toggle=element('button',expanded.has(node.path)?'⌄':'›');toggle.type='button';toggle.setAttribute('data-category-path',node.path);toggle.setAttribute('data-category-control','toggle');toggle.className='category-toggle';
      const update=()=>{toggle.textContent=expanded.has(node.path)?'⌄':'›';toggle.setAttribute('aria-expanded',String(expanded.has(node.path)));toggle.setAttribute('aria-label',(expanded.has(node.path)?'收起 ':'展开 ')+nameOf(node.path));};update();
      toggle.onclick=()=>{if(expanded.has(node.path))expanded.delete(node.path);else expanded.add(node.path);children.hidden=!expanded.has(node.path);update();};row.append(toggle);
     }else {const spacer=element('span');spacer.className='category-toggle-space';row.append(spacer);}
-    if(node.item){const select=element('button'),folder=element('span');folder.className='folder-icon';folder.setAttribute('aria-hidden','true');select.append(folder,element('span',nameOf(node.path)));select.type='button';select.setAttribute('aria-current',node.path===category?'page':'false');select.onclick=()=>open(node.path);row.append(select);}
+    if(node.item){const select=element('button'),folder=element('span');folder.className='folder-icon';folder.setAttribute('aria-hidden','true');select.append(folder,element('span',nameOf(node.path)));select.type='button';select.setAttribute('data-category-path',node.path);select.setAttribute('data-category-control','select');select.setAttribute('aria-current',node.path===category?'page':'false');select.onclick=()=>open(node.path);row.append(select);}
     else row.append(element('span',nameOf(node.path)));
     li.append(row);if(node.children.length){children=branch(node.children);children.hidden=!expanded.has(node.path);li.append(children);}list.append(li);
    }
    return list;
   }
   tree.append(branch(roots));if(!catalog.some(item=>item.path))tree.append(element('p','暂无子分类，可浏览 Raw 根目录材料。'));
+  if(focused)[...tree.querySelectorAll('button')].find(button=>button.getAttribute('data-category-path')===focused.path&&button.getAttribute('data-category-control')===focused.kind)?.focus();
  }
  function render(){
   content.replaceChildren();const library=getLibrary(),item=catalog.find(item=>item.path===category),parent=category.includes('/')?category.slice(0,category.lastIndexOf('/')):'Raw 根目录';
@@ -64,7 +67,7 @@ export function createCategoryBrowser({tree,content,getLibrary}){
   if(!append){files=[];content.replaceChildren(element('p','正在加载分类材料…'));}
   else for(const button of content.querySelectorAll('button')){button.disabled=true;button.textContent='正在加载更多材料…';}
   content.setAttribute('aria-busy','true');
-  try{const result=await readCategory({id:library.id,category:value,cursor:append?next:0});if(!current())return;catalog=result.categories;files=[...new Map((append?[...files,...result.files]:result.files).map(file=>[file.path,file])).values()];total=result.total;next=result.nextCursor;renderTree();render();}
+  try{const result=await readCategory({id:library.id,category:value,cursor:append?next:0});if(!current())return;const catalogChanged=JSON.stringify(catalog)!==JSON.stringify(result.categories);catalog=result.categories;files=[...new Map((append?[...files,...result.files]:result.files).map(file=>[file.path,file])).values()];total=result.total;next=result.nextCursor;if(catalogChanged)renderTree();else for(const button of tree.querySelectorAll('button'))if(button.getAttribute('data-category-control')==='select')button.setAttribute('aria-current',button.getAttribute('data-category-path')===category?'page':'false');render();}
   catch(error){if(!current())return;if(append)render();else content.replaceChildren();const message=element('p','分类加载失败：'+error.message);message.setAttribute('role','alert');const retry=element('button','重试加载');retry.onclick=()=>open(value,append);content.append(message,retry);}
   finally{if(current()){loading=false;content.setAttribute('aria-busy','false');}}
  }

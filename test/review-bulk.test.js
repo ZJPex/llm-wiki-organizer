@@ -94,3 +94,23 @@ test('真实页面经公共HTTP归档人工草稿，只移动所选合成材料�
  assert.equal(visible(host.querySelector('[aria-label="批量归档操作"]')),false);
  assert.match(host.querySelector('[aria-label="归档结果"]').textContent,/成功 1/);
 });
+
+test('批量正常建议跳过分类确认失败项，正常计数一致且保留人工合法选择',async t=>{
+ const p=await page(t);p.batch.sources[0].categoryConfirmationError='目标冲突需要人工核对';p.batch.sources[0].skipReason='很长的原始保留说明'.repeat(20);await p.workspace.refresh();
+ assert.match(p.host.querySelector('[aria-label="材料队列"]').textContent,/正常建议 1 份/);
+ await p.button('选择整批正常建议').click();assert.match(p.footer().textContent,/1 份/);
+ assert.equal(p.input('选择 材料0.md').checked,false);
+ assert.equal(p.input('选择 材料0.md').disabled,false);
+ const open=p.host.querySelectorAll('button').find(n=>n.getAttribute('aria-label')==='阅读 材料0.md');assert.doesNotMatch(open.textContent,/很长的原始保留说明/);
+ assert.match(p.host.querySelector('[aria-label="当前材料阅读"]').textContent,/目标冲突需要人工核对/);
+});
+
+test('详情与批量范围使用同一份人工草稿最终位置，不展示旧targetPath',async t=>{
+ const p=await page(t);p.batch.sources[0].targetPath='/library/raw/sources/旧位置.md';await p.workspace.refresh();
+ await p.button('选择整批正常建议').click();await p.button('详情').click();
+ const category=p.input('主分类 材料0.md');category.value='002 人工分类';await category.dispatchEvent({type:'input'});
+ const detail=p.host.querySelector('[aria-label="材料证据详情"]');
+ assert.match(detail.textContent,/\/library\/raw\/sources\/002 人工分类\/建议0.md/);
+ assert.match(p.footer().textContent,/\/library\/raw\/sources\/002 人工分类\/建议0.md/);
+ assert.doesNotMatch(detail.textContent,/旧位置/);
+});

@@ -68,3 +68,5 @@ main:has(#task-workspace:not([hidden]) .review-workspace)>#error{margin:8px 20px
 .review-bulk-scope[open]{flex-basis:100%;max-height:180px;overflow:auto;padding:12px;background:#f6fafb;border-radius:6px}
 .review-bulk-scope p{overflow-wrap:anywhere;font-size:13px}
 @media(max-width:900px){.review-footer{position:static;padding:14px 12px;gap:10px}.review-footer>button{width:100%}.review-footer>p,.review-footer>label{flex-basis:100%}}
+/* 有执行反馈时让库选择器参与文档流，避免覆盖结果与错误；正常阅读仍保持 B2 对齐。 */
+main:has(#task-workspace:not([hidden]) .review-workspace):has(.review-workspace>[aria-label="归档结果"]:not([hidden]),.review-workspace>[role="alert"]:not(:empty),>#error:not(:empty))>.library-bar{position:static;min-height:66px;padding:12px 16px}

@@ -1,5 +1,5 @@
 import {createCategoryBrowser} from './category-browser.js';
-import {createTaskHome,taskUrl} from './task-home.js';
+import {createTaskHome,taskUrl,libraryPathKey} from './task-home.js';
 import {mountRestructureWorkspace} from './restructure-workspace.js';
 import {mountReviewWorkspace} from './review-workspace.js';
 import {element,requestBatch} from './batch-ui.js';
@@ -27,10 +27,15 @@ function environment(){
  $('#notice').textContent=selected?(selected.valid?'● 设置已校验':selected.error??'设置已失效，请修正。'):'尚未配置知识库，请补齐位置并保存。';
  $('#start button').disabled=!selected?.valid;
 }
+function libraryLabel(record){
+ const parts=record.libraryPath.replaceAll('\\','/').split('/').filter(Boolean);
+ for(let length=1;length<=parts.length;length++){const label=parts.slice(-length).join('/');if(!libraries.some(other=>other.id!==record.id&&libraryPathKey(other.libraryPath).split('/').slice(-length).join('/')===libraryPathKey(label)))return label;}
+ return record.libraryPath;
+}
 async function loadLibraries(preferred,version=contextVersion){
  const result=await api('list');if(version!==contextVersion)return false;
  libraries=result.libraries;$('#library').replaceChildren();
- for(const record of libraries){const option=element('option',(record.libraryPath.replaceAll('\\','/').split('/').filter(Boolean).at(-1)||record.libraryPath)+(record.valid?'':'（需修正）'));option.value=record.id;option.title=record.libraryPath;$('#library').append(option);}
+ for(const record of libraries){const option=element('option',libraryLabel(record)+(record.valid?'':'（需修正）'));option.value=record.id;option.title=record.libraryPath;$('#library').append(option);}
  selected=libraries.find(record=>record.id===preferred)??libraries[0]??null;
  if(selected)$('#library').value=selected.id;else $('#library').append(element('option','请先设置知识库'));
  environment();return true;
@@ -70,7 +75,7 @@ run(async version=>{
  const batchId=new URLSearchParams(location.search).get('batchId');
  if(batchId){
   const task=await requestBatch('get',{batchId});if(version!==contextVersion)return;
-  const library=libraries.find(record=>record.libraryPath.replaceAll('\\','/').toLowerCase()===task.libraryPath.replaceAll('\\','/').toLowerCase());
+  const library=libraries.find(record=>libraryPathKey(record.libraryPath)===libraryPathKey(task.libraryPath));
   if(!library?.valid)throw new Error('此任务的知识库未配置或设置失效，请先修正设置。');
   selected=library;$('#library').value=library.id;environment();await categories();if(version!==contextVersion)return;
   show('task-workspace',task.mode==='restructure'?'首次重构':'集中审核整理方案');

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 
-async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create}={}){
+async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task}={}){
  const document=createInboxDocument();document.body.replaceChildren();
  const add=(tag,id,parent=document.body)=>{const node=document.createElement(tag);node.id=id;parent.append(node);return node;};
  for(const id of ['title','notice','error','categories','featured','tasks','category-description','files','page-label'])add('div',id);
@@ -12,12 +12,14 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
  // 复用轻量页面夹具，补充真实页面使用的原生方法。
  const original=document.createElement;document.createElement=tag=>{const node=original(tag);node.removeAttribute=name=>node.attributes.delete(name);return node;};
  form.removeAttribute=name=>form.attributes.delete(name);
- const location={search:'',href:''},calls=[];
- for(const [key,value] of Object.entries({document,location})){const old=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});t.after(()=>{if(old)Object.defineProperty(globalThis,key,old);else delete globalThis[key];});}
+ const location={search,href:''},calls=[];
+ for(const [key,value] of Object.entries({document,location,sessionStorage:{getItem:()=>null,setItem:()=>{}}})){const old=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});t.after(()=>{if(old)Object.defineProperty(globalThis,key,old);else delete globalThis[key];});}
+ t.mock.method(globalThis,'setInterval',()=>0);
  t.mock.method(globalThis,'fetch',async(url,options)=>{const input=JSON.parse(options?.body??'{}');calls.push({url,input});let value;
  if(url==='/api/session')value={token:'fixed'};
  else if(url==='/api/workspace/list')value={libraries};
  else if(url==='/api/workspace/categories')value={categories:[],files:[],total:0,nextCursor:null};
+ else if(url==='/api/batches/get')value=task;
  else if(url==='/api/batches/list')value=pages[input.cursor??0];
  else if(url==='/api/workspace/create')return create(input);
  else throw new Error('意外请求 '+url);
@@ -103,4 +105,20 @@ test('日常分析完成且已有可审核建议时，首页和列表显示待�
  assert.equal(p.$('tasks').querySelector('a').textContent,'继续审核');
  assert.match(p.$('tasks').textContent,/11 份可审核/);
  assert.equal(p.calls.some(call=>/analyze|confirm|apply/.test(call.url)),false);
+});
+
+test('同名知识库选项包含可区分位置，独有名称保持简短且切换正确',async t=>{
+ const libraries=[{id:'a',libraryPath:'E:/工作/library',valid:true},{id:'b',libraryPath:'E:/个人/library',valid:true},{id:'c',libraryPath:'E:/个人/notes',valid:true}];
+ const p=await page(t,{libraries});await p.document.waitFor(()=>p.$('featured').textContent.includes('还没有整理任务'));
+ const labels=p.$('library').children.map(n=>n.textContent);
+ assert.deepEqual(labels,['工作/library','个人/library','notes']);
+ p.$('library').value='b';await p.$('library').dispatchEvent({type:'change'});assert.equal(p.$('library').value,'b');
+});
+
+test('首页任务与直达任务对库路径大小写、分隔符和尾斜线使用相同身份规则',async t=>{
+ const task={...batch('direct','e:/wiki/','2026-10-05'),sources:[],nextCursor:null};
+ const p=await page(t,{libraries:[{id:'wiki',libraryPath:'E:\\wiki',valid:true}],pages:[{records:[task],nextCursor:null}],search:'?batchId=direct',task});
+ await p.document.waitFor(()=>p.$('task-workspace').textContent.includes('整批 0 份'));
+ assert.equal(p.$('error').textContent,'');assert.equal(p.$('library').value,'wiki');
+ assert.equal(p.$('tasks').querySelector('a').href,'/?batchId=direct');
 });
