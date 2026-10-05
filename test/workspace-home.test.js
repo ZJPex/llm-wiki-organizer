@@ -28,6 +28,16 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
 }
 const batch=(batchId,libraryPath,updatedAt,status='pending')=>({batchId,libraryPath,updatedAt,mode:'inbox',phase:'file-review',sourceRoot:libraryPath+'/inbox',counts:{total:4,classified:4},flow:{},report:{status,hasExecution:status==='complete',counts:{total:4,succeeded:status==='complete'?4:0,retained:0,blocked:0,failed:0,pending:status==='complete'?0:4,unverified:0}}});
 
+test('第二库任务刷新失败后重试保持当前库身份',async t=>{
+ const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],pages:[{records:[batch('库一','/a','2026-10-05'),batch('库二','/b','2026-10-05')],nextCursor:null}]});
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('继续审核'));
+ p.$('library').value='b';await p.$('library').dispatchEvent({type:'change'});
+ const original=globalThis.fetch;let fail=true;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/batches/list'&&fail){fail=false;throw new Error('暂时断开');}return original(url,options);});
+ await p.$('refresh').click();await p.$('refresh').click();
+ assert.equal(p.$('library').value,'b');assert.match(p.$('featured').querySelector('a').href,/batchId=%E5%BA%93%E4%BA%8C/);
+});
+
 test('首页跨公共分页发现当前库最近未完成任务，同更新时间稳定排序且继续只提供导航',async t=>{
  const p=await page(t,{pages:[{records:[batch('foreign','/b','2026-10-05')],nextCursor:1},{records:[batch('z','/a','2026-10-04'),batch('a','/a','2026-10-04'),batch('done','/a','2026-10-05','complete')],nextCursor:null}]});
  await p.document.waitFor(()=>p.$('featured').textContent.includes('继续审核'));
