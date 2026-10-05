@@ -28,7 +28,7 @@ await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'f
 const generate=async(_,request)=>{
  if(request.stage==='category-search')return {candidates:[category]};
  if(request.stage==='category-choice')return {category,reason:'材料主要讨论检索、索引和证据核对，归入检索增强生成。',evidence:request.content.evidence,uncertain:false};
- return {title:request.identity.replace(/^\d+_/,'').replace(/\.md$/,''),summary:content,evidence:['按语义完整性切分文档，保留来源和标题等元数据。','检索后核对原始证据，避免仅凭相似度判断答案是否可靠。'],uncertain:false};
+ return {title:request.identity.replace(/^\d+_/,'').replace(/\.md$/,''),summary:content,evidence:[request.content],uncertain:false};
 };
 const planning=createPlanningService({stateDirectory:path.join(fixture.root,'planning'),generate});
 const batches=createBatchService({stateDirectory:path.join(fixture.root,'batches'),planning,strategies:{inbox:createInboxStrategy(),restructure:createRestructureStrategy({generate})}});
@@ -37,5 +37,6 @@ const settings=await workspace.save({libraryPath,sourceRoot,artifactRoot,configP
 await workspace.create({id:settings.id,mode:'restructure'});
 let batch=await workspace.create({id:settings.id,mode:'inbox'});
 for(let index=0;index<3;index++)batch=await batches.analyzeNext({batchId:batch.batchId,revision:batch.revision,limit:5});
+if(batch.counts.classified!==11)throw new Error('合成材料未形成预期的 11 份可审核建议');
 const server=createApp({planning,batches,workspace});
 server.listen(Number(process.env.PORT||4337),'127.0.0.1',()=>console.log(JSON.stringify({url:`http://127.0.0.1:${server.address().port}`,batchId:batch.batchId,fixtureRoot:fixture.root,libraryId:settings.id})));
