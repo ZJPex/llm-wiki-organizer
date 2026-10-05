@@ -24,10 +24,12 @@ main:has(#task-workspace:not([hidden]) .review-workspace)>#error{margin:8px 20px
 .review-items{display:grid}
 .review-queue-item{display:flex;align-items:center;gap:12px;border-bottom:1px solid #edf2f5;padding:0 8px;border-radius:6px}
 .review-queue-item[data-current=true]{background:var(--accent-soft);box-shadow:inset 3px 0 var(--accent)}
-.review-open{border:0;background:transparent;min-width:0;flex:1;text-align:left;padding:9px 0;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:8px;row-gap:5px;min-height:62px}
+.review-open{border:0;background:transparent;min-width:0;flex:1;text-align:left;padding:9px 0;display:grid;grid-template-columns:24px minmax(0,1fr) auto;column-gap:10px;row-gap:5px;min-height:62px}
+.review-file-icon{grid-column:1;grid-row:1/3;width:18px;height:23px;align-self:center;border:1.5px solid #526587;border-radius:2px;position:relative;background:linear-gradient(#526587,#526587) 4px 11px/8px 1px no-repeat,linear-gradient(#526587,#526587) 4px 15px/8px 1px no-repeat}
+.review-file-icon:after{content:"";position:absolute;right:-1px;top:-1px;width:6px;height:6px;background:var(--surface);border-left:1.5px solid #526587;border-bottom:1.5px solid #526587}
 .review-queue-name{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.review-open small{grid-column:1;font-size:13px;color:var(--muted);overflow-wrap:anywhere;line-height:1.5}
-.review-queue-badge{grid-column:2;grid-row:1/3;align-self:center;background:#e6f5f5;color:#00818a;border-radius:13px;padding:5px 8px;font-size:12px;max-width:70px;line-height:1.5;text-align:center}.review-queue-badge[data-warning=true]{background:#fff3df;color:#996014}
+.review-open small{grid-column:2;font-size:13px;color:var(--muted);overflow-wrap:anywhere;line-height:1.5}
+.review-queue-badge{grid-column:3;grid-row:1/3;align-self:center;background:#e6f5f5;color:#00818a;border-radius:13px;padding:5px 8px;font-size:12px;max-width:70px;line-height:1.5;text-align:center}.review-queue-badge[data-warning=true]{background:#fff3df;color:#996014}
 .review-queue nav{padding-top:16px;justify-content:space-between;font-size:12px;gap:5px}
 .review-queue nav button{font-size:12px;min-height:32px;padding:6px 8px}
 .review-workspace .review-reading{min-width:0;padding:28px 38px 40px;border:0;border-radius:0}
@@ -35,8 +37,10 @@ main:has(#task-workspace:not([hidden]) .review-workspace)>#error{margin:8px 20px
 .review-breadcrumb{color:var(--muted);font-size:14px;margin:0}
 .review-reading-actions{display:flex;gap:8px;flex-wrap:wrap}
 .review-reading-actions button{min-height:38px;padding:8px 14px;font-size:14px}
-.review-reading .review-title{font-size:34px;letter-spacing:-.5px;line-height:1.45;margin:18px 0 6px;overflow-wrap:anywhere}
-.review-item-state{font-size:13px;color:var(--accent);margin:0 0 18px}
+.review-title-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:18px 0 22px}
+.review-reading .review-title{font-size:34px;letter-spacing:-.5px;line-height:1.45;margin:0;overflow-wrap:anywhere}
+.review-item-state{font-size:13px;color:var(--accent);background:var(--accent-soft);padding:6px 12px;border-radius:13px;white-space:nowrap}
+.review-item-state[data-warning=true]{background:#fff3df;color:#996014}
 .review-fields{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .review-fields label{margin:4px 0 10px;font-weight:600;font-size:15px;align-content:start}
 .review-fields input{width:100%;font-weight:400;font-size:15px;min-width:0}
