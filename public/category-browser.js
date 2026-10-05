@@ -32,7 +32,7 @@ export function createCategoryBrowser({tree,content,getLibrary}){
      const update=()=>{toggle.textContent=expanded.has(node.path)?'⌄':'›';toggle.setAttribute('aria-expanded',String(expanded.has(node.path)));toggle.setAttribute('aria-label',(expanded.has(node.path)?'收起 ':'展开 ')+nameOf(node.path));};update();
      toggle.onclick=()=>{if(expanded.has(node.path))expanded.delete(node.path);else expanded.add(node.path);children.hidden=!expanded.has(node.path);update();};row.append(toggle);
     }else {const spacer=element('span');spacer.className='category-toggle-space';row.append(spacer);}
-    if(node.item){const select=element('button',nameOf(node.path));select.type='button';select.setAttribute('aria-current',node.path===category?'page':'false');select.onclick=()=>open(node.path);row.append(select);}
+    if(node.item){const select=element('button'),folder=element('span');folder.className='folder-icon';folder.setAttribute('aria-hidden','true');select.append(folder,element('span',nameOf(node.path)));select.type='button';select.setAttribute('aria-current',node.path===category?'page':'false');select.onclick=()=>open(node.path);row.append(select);}
     else row.append(element('span',nameOf(node.path)));
     li.append(row);if(node.children.length){children=branch(node.children);children.hidden=!expanded.has(node.path);li.append(children);}list.append(li);
    }
@@ -43,12 +43,13 @@ export function createCategoryBrowser({tree,content,getLibrary}){
  function render(){
   content.replaceChildren();const library=getLibrary(),item=catalog.find(item=>item.path===category),parent=category.includes('/')?category.slice(0,category.lastIndexOf('/')):'Raw 根目录';
   const breadcrumb=element('p','分类浏览 / '+parent);breadcrumb.className='category-breadcrumb';
-  const title=element('h1',nameOf(category));
+  const headingName=nameOf(category),numbered=headingName.match(/^(\d+(?:\.\d+)*)\s+(.+)$/u),title=element('div');title.className='category-title';title.append(element('h1',numbered?numbered[2]:headingName));
+  if(numbered){const badge=element('span',numbered[1]);badge.className='category-number';badge.setAttribute('aria-label','分类编号');title.append(badge);}
   const description=element('p',item?.description||'此分类未提供说明。');description.className='category-description';
   const heading=element('div');heading.className='category-list-heading';heading.append(element('h2',`当前分类 · ${total} 份材料`),disclosure('分类路径',library.libraryPath.replaceAll('\\','/')+'/raw/sources'+(category?'/'+category:'')));
   content.append(breadcrumb,title,description,heading);
   const list=element('div');
-  for(const file of files){const article=element('article');article.className='category-file';const identity=element('div'),icon=element('span','▤');icon.setAttribute('aria-hidden','true');icon.className='file-icon';identity.append(element('p',file.name),element('small',category?category.split('/').join(' / '):'Raw 根目录'));article.append(icon,identity,disclosure('路径',file.path));list.append(article);}
+  for(const file of files){const article=element('article');article.className='category-file';const identity=element('div'),icon=element('span');icon.setAttribute('aria-hidden','true');icon.className='file-icon';identity.append(element('p',file.name),element('small',category?category.split('/').join(' / '):'Raw 根目录'));article.append(icon,identity,disclosure('路径',file.path));list.append(article);}
   content.append(list);
   const status=element('p',`已显示 ${files.length} 份材料，共 ${total} 份`);status.setAttribute('role','status');content.append(status);
   if(total===0)content.append(element('p','此分类暂无 Markdown 材料。'));
