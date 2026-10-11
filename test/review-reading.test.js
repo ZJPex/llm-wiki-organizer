@@ -33,6 +33,14 @@ test('队列阅读与勾选独立，中央显示真实摘要证据，详情默�
  await p.button('关闭详情').click();assert.equal(detail().hidden,true);assert.equal(p.document.activeElement,p.button('详情'));
  assert.ok(p.requests.every(request=>request.url.endsWith('/get')));
 });
+test('正在编辑时刷新仍更新多篇进度，保存审核可用而归档禁用，光标与草稿保留',async t=>{
+ const p=await pageFixture(t);p.batch.analysisJob={status:'running',allowedActions:['pauseAnalysis'],inFlight:1};p.batch.modelConcurrency={limit:3,active:1};p.batch.sources[1].progress={status:'running',stage:'segment',completed:1,totalSteps:8};await p.workspace.refresh();const filter=p.host.querySelector('[aria-label="按状态筛选"]');filter.value='classified';await filter.dispatchEvent({type:'change'});
+ const selected=p.input('选择 材料0.md');selected.checked=true;await selected.dispatchEvent({type:'change'});
+ const name=p.input('新名称 材料0.md');name.value='编辑中的草稿.md';await name.dispatchEvent({type:'input'});name.focus();name.selectionStart=3;name.selectionEnd=5;
+ p.batch.sources[1].progress.completed=4;await p.workspace.refresh();
+ assert.ok(p.input('新名称 材料0.md')===name,'保留当前编辑节点');assert.ok(p.document.activeElement===name,'保留焦点');assert.equal(name.selectionStart,3);assert.equal(name.selectionEnd,5);assert.match(p.host.textContent,/材料1.md.*4\/8/);assert.equal(p.button('保存所选审核').disabled,false);assert.equal(p.button('确认并归档所选材料').disabled,true);
+ p.batch.sources[0].reviewVersion=1;p.batch.sources[0].reviewResetCategory=true;p.batch.sources[0].status='needs-analysis';await p.workspace.refresh();assert.equal(p.input('选择 材料0.md'),undefined);assert.ok(p.input('新名称 材料0.md')===name);assert.equal(name.value,'编辑中的草稿.md');assert.match(p.host.textContent,/草稿.*重新审核/);assert.equal(filter.value,'classified');
+});
 
 test('详情收起时目录问题仍可见，展开后上下文动作继续调用原审核接口',async t=>{
  const p=await pageFixture(t);p.batch.sources[0].evolution={status:'proposed',operations:[{type:'add',parent:'001 分类',label:'子分类',problem:'现有目录混合两种查找目的',benefit:'区分使用场景'}]};
@@ -46,7 +54,7 @@ test('详情收起时目录问题仍可见，展开后上下文动作继续调�
  assert.ok(p.requests.filter(r=>r.body.action).every(r=>r.url.endsWith('/reviewItem')&&r.body.sourceId==='0'));
 });
 
-test('切换、筛选、分页和刷新保留手改草稿；审核版本失效取消选择，源变化重置草稿',async t=>{
+test('切换、筛选、分页和刷新保留手改草稿；审核版本和源变化取消选择并保留草稿供重审',async t=>{
  const p=await pageFixture(t,{count:22});
  const name=p.input('新名称 材料0.md');name.value='人工标题.md';await name.dispatchEvent({type:'input'});
  await p.button('Raw 根目录').click();
@@ -57,7 +65,7 @@ test('切换、筛选、分页和刷新保留手改草稿；审核版本失效�
  p.batch.sources[0].suggestion='后台新建议.md';await p.workspace.refresh();assert.equal(p.input('新名称 材料0.md').value,'人工标题.md');
  p.batch.sources[0].reviewVersion=2;await p.workspace.refresh();assert.equal(p.input('选择 材料0.md').checked,false);assert.equal(p.input('新名称 材料0.md').value,'人工标题.md');
  search.value='不存在';await search.dispatchEvent({type:'input'});assert.match(p.host.querySelector('[aria-label="当前材料阅读"]').textContent,/没有符合条件的材料/);
- search.value='';await search.dispatchEvent({type:'input'});p.batch.sources[0].hash='changed';await p.workspace.refresh();assert.equal(p.input('新名称 材料0.md').value,'后台新建议.md');
+ search.value='';await search.dispatchEvent({type:'input'});p.batch.sources[0].hash='changed';await p.workspace.refresh();assert.equal(p.input('新名称 材料0.md').value,'人工标题.md');assert.equal(p.input('选择 材料0.md').checked,false);assert.match(p.host.textContent,/草稿.*重新审核/);
 });
 
 test('合成知识库中通过页面保存人工名称和分类，读取证据与审核不会移动原文件',async t=>{

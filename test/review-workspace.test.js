@@ -44,7 +44,7 @@ test('先打开待分析任务：新建议同步非手动草稿，分页刷新�
  const source={hash:'one',status:'pending'};let draft=reconcileReviewDraft(source);assert.equal(draft.name,'');
  Object.assign(source,{suggestion:'正文主题.md',classification:{category:'001 缓存'}});draft=reconcileReviewDraft(source,draft);assert.equal(draft.name,'正文主题.md');assert.equal(draft.category,'001 缓存');
  Object.assign(draft,{manual:true,name:'人工.md',category:'',selected:true});assert.deepEqual(reconcileReviewDraft(source,draft),draft);
- const changed=reconcileReviewDraft({...source,hash:'two'},draft);assert.equal(changed.selected,false);assert.equal(changed.manual,false);assert.equal(changed.name,'正文主题.md');
+ const changed=reconcileReviewDraft({...source,hash:'two'},draft);assert.equal(changed.selected,false);assert.equal(changed.manual,true);assert.equal(changed.name,'人工.md');assert.equal(changed.invalidated,true);
  const reviewed={hash:'saved',status:'reviewed',selected:true,confirmedName:'已审核.md',classification:{category:'001 缓存'}};
  const restored=reconcileReviewDraft(reviewed);assert.equal(restored.selected,true);assert.equal(restored.name,'已审核.md');
  restored.selected=false;assert.equal(reconcileReviewDraft(reviewed,restored).selected,false);
