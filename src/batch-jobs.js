@@ -7,15 +7,16 @@ export function analysisJobView(batch){
  const live=jobs.get(batch.batchId),saved=batch.flow.analysisJob;
  let status=live?.status??saved?.status??'idle';
  if(!live&&['running','pausing'].includes(status))status='interrupted';
+ const uncertain=(batch.sources??[]).filter(source=>source.progress?.status==='running').map(source=>source.sourceId);
  return {status,boundary:'model-request',allowedActions:status==='running'?['pauseAnalysis']:status==='pausing'?[]:status==='idle'?['startAnalysis']:status==='complete'?['startAnalysis']:['continueAnalysis'],
-  ...(status==='interrupted'&&(batch.flow.classificationCurrent?.status==='running'||batch.flow.analysisCurrent?.status==='running')?{uncertainSourceId:(batch.flow.classificationCurrent?.status==='running'?batch.flow.classificationCurrent:batch.flow.analysisCurrent).sourceId}:{}),
+  ...(status==='interrupted'&&(uncertain.length||batch.flow.classificationCurrent?.status==='running'||batch.flow.analysisCurrent?.status==='running')?{uncertainSourceId:uncertain[0]??(batch.flow.classificationCurrent?.status==='running'?batch.flow.classificationCurrent:batch.flow.analysisCurrent).sourceId,uncertainSourceIds:uncertain}:{}),
   ...(saved?.error?{error:saved.error}:{})};
 }
 export function assertAnalysisAccess(batch,input){
  const owner=libraries.get(batch.libraryPath.toLowerCase());
  if(owner&&input[jobOwner]!==owner)batchFail('BATCH_BUSY','该知识库正在后台分析，请先暂停并等待当前材料完成');
 }
-export function createBatchJobs({store,view,step,classify,proposeTree,checkIdle,prepare}){
+export function createBatchJobs({store,view,step,classify,processSource,proposeTree,checkIdle,prepare}){
  async function save(job,status,error){
   const batch=await store.get(job.batchId);
   return store.update(batch.batchId,batch.revision,record=>{record.flow.analysisJob={status,...(error?{error:{code:error.code??'ANALYSIS_FAILED',message:error.message}}:{})};return record;});
@@ -30,6 +31,12 @@ export function createBatchJobs({store,view,step,classify,proposeTree,checkIdle,
     if(!analyzing&&!(batch.mode==='inbox'&&before.classificationProgress.remaining)){
      if(batch.mode==='restructure'&&(!batch.flow.tree||batch.flow.tree.status==='stale')&&batch.sources.some(source=>source.analysis?.analysis&&!source.analysis.analysis.uncertain&&!['skipped','blocked'].includes(source.status)))await proposeTree({batchId:batch.batchId,revision:batch.revision,action:'propose',[jobOwner]:job});
      break;
+    }
+    if(batch.mode==='inbox'&&processSource){
+     const selected=batch.sources.filter(source=>['pending','analysis-failed','needs-analysis'].includes(source.status)||(source.status==='blocked'&&!source.analysis)||(['analyzed','named','classification-failed'].includes(source.status)&&source.analysis&&!source.analysis.uncertain));
+     const results=await Promise.allSettled(selected.map(source=>processSource(job,source.sourceId,!!source.analysis&&!['pending','needs-analysis','analysis-failed'].includes(source.status))));
+     const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+     continue;
     }
     const next=await (analyzing?step:classify)({batchId:job.batchId,revision:batch.revision,limit:1,stopOnFailure:true,[jobOwner]:job});
     const progress=analyzing?'analysisProgress':'classificationProgress';

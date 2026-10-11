@@ -68,7 +68,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   }
   async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await atomicRename(temporary, file); }
   const inFlight=new Map();
-  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=fn().finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
+  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=withModelContext({...modelContext(),articleKey:modelContext()?.articleKey??key},fn).finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,

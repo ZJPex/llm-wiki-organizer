@@ -12,8 +12,8 @@ const planning=createPlanningService({stateDirectory:path.join(root,'planning'),
  await appendFile(path.join(root,'model-calls.jsonl'),JSON.stringify({identity:request.identity,stage:request.stage})+'\n');
  if(request.stage==='category-search')return {candidates:['']};
  if(request.stage==='category-choice')return {category:'',reason:'正文主题',evidence:[request.content.evidence[0]],uncertain:false};
- calls++;await appendFile(path.join(root,'calls.jsonl'),JSON.stringify({identity:request.identity,stage:request.stage})+'\n');
- if(calls===blockAt){process.send({blocked:true});await new Promise(resolve=>{release=resolve;});}
+ const callNumber=++calls;await appendFile(path.join(root,'calls.jsonl'),JSON.stringify({identity:request.identity,stage:request.stage})+'\n');
+ if(callNumber===blockAt){process.send({blocked:true});await new Promise(resolve=>{release=resolve;});}
  return {title:'缓存主题',summary:request.content,evidence:[request.content.slice(0,12)],uncertain:false};
 }});
 const server=createApp({batches:createBatchService({planning,stateDirectory:path.join(root,'batches'),strategies:{inbox:createInboxStrategy(),restructure:createRestructureStrategy()}})});

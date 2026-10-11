@@ -11,6 +11,13 @@ test('审核进度显示分段完成量与实际占用，调速输入保持焦�
  await host.querySelector('button').click();assert.deepEqual(settings,[1]);assert.match(host.textContent,/收敛/);assert.match(host.textContent,/3\/1/);
  }finally{globalThis.document=previous;}
 });
+test('并发审核列表显示每份正在分析材料的独立阶段与完成量',()=>{
+ const document=createInboxDocument(),previous=globalThis.document;globalThis.document=document;
+ try{const host=document.querySelector('#progress'),controls=modelConcurrencyControls(host);
+  controls.update({modelConcurrency:{limit:3,active:3},sources:[{identity:'甲.md',progress:{status:'running',stage:'segment',completed:2,totalSteps:8}},{identity:'乙.md',progress:{status:'running',stage:'choice'}}],flow:{}});
+  assert.match(host.textContent,/甲.md.*2\/8/);assert.match(host.textContent,/乙.md.*选择分类/);
+ }finally{globalThis.document=previous;}
+});
 test('恢复进度展示已复用段、该次分析在途数及中断未知计量',()=>{
  const document=createInboxDocument(),previous=globalThis.document;globalThis.document=document;
  try{const host=document.querySelector('#progress'),controls=modelConcurrencyControls(host);

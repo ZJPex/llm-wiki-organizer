@@ -38,7 +38,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    const card=element('article');card.className='review-card';const heading=element('div');heading.className='section-heading';
    const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);checkbox.onchange=()=>{checkbox.checked?selected.add(item.itemId):selected.delete(item.itemId);render();};
    const title=element('label');title.append(checkbox,element('strong',item.identity));const badge=element('span',labels[item.status]??item.status);badge.className='status-badge';heading.append(title,badge);card.append(heading);
-   if(item.stage&&item.status==='analyzing')card.append(element('p','当前阶段：'+item.stage));
+   if(item.stage&&item.status==='analyzing'){const stage=({segment:'正文分段',synthesis:'摘要汇总',search:'分类检索',choice:'主分类选择',preparing:'检查来源'})[item.stage]??item.stage;card.append(element('p','当前阶段：'+stage+(item.progress?.totalSteps?` ${item.progress.completed??item.progress.step??0}/${item.progress.totalSteps}`:'')));}
    if(item.analysis?.summary)card.append(element('p',item.analysis.summary));
    if(item.invalidatedReason)card.append(element('p',item.invalidatedReason));
    if(item.error)card.append(element('p',item.error));

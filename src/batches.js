@@ -28,13 +28,13 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
  planning??=createPlanningService({stateDirectory:stateDirectory?path.join(stateDirectory,'planning'):undefined});
  const strategy=batch=>{const selected=strategies[batch.mode];if(!selected)batchFail('INVALID_MODE','整理模式尚不可用');return selected;};
  const reportActive=batch=>active.has(batch.batchId)||['running','pausing'].includes(analysisJobView(batch).status)||historyWorkflowView(batch).historyValidation?.status==='running'||historyApplicationView(batch).historyApplication?.status==='running';
- const view=(batch,input)=>({...batchView(batch,input,reportActive(batch)),analysisJob:analysisJobView(batch),modelConcurrency:planning.modelConcurrency?.snapshot(),...historyWorkflowView(batch,input),...historyApplicationView(batch,input),...invalidationView(batch,input)});
+ const view=(batch,input)=>({...batchView(batch,input,reportActive(batch)),analysisJob:{...analysisJobView(batch),inFlight:analysisJobView(batch).status==='interrupted'?null:planning.modelConcurrency?.activeFor(batch.batchId)??0,measurement:analysisJobView(batch).status==='interrupted'?'unknown':'live'},modelConcurrency:planning.modelConcurrency?.snapshot(),...historyWorkflowView(batch,input),...historyApplicationView(batch,input),...invalidationView(batch,input)});
  function assertExecutionScene(batch){if(executionBlock(batch,'review'))batchFail('EXECUTION_INTERRUPTED','存在未处理的执行现场，请从任务报告查询、继续或恢复');}
  function invalidateSlices(batch){assertExecutionScene(batch);for(const slice of batch.slices)if(!['complete','failed','cancelled'].includes(slice.status))slice.status='cancelled';}
  async function current(input){const batch=await store.get(input.batchId);if(batch.revision!==input.revision)batchFail('STALE_BATCH','批次已更新，请重新读取并审核');return batch;}
  async function fresh(batch,sources){const refreshed=await refreshReviewState(batch,{planning,executionCheck:false});if(sources.some(source=>refreshed.changedSourceIds.includes(source.sourceId)))batchFail('REVIEW_INVALIDATED','材料或其依赖已变化，请查看具体失效范围并重新审核');for(const source of sources){if(source.ingestStatus==='uncertain')batchFail('UNKNOWN_ASSOCIATION','来源关联不明确，保留原处');}}
  async function refreshReview(input){return operate(input,'review-running',async batch=>{await refreshReviewState(batch,{planning});batch.phase=batch.sources.every(source=>source.status==='succeeded')?'batch-progress':batch.flow.tree?.status==='stale'?'tree-review':'file-review';});}
- async function operate(input,phase,action){let batch=await current(input);if(['analysis-running','classification-running','review-running','tree-running'].includes(phase))assertExecutionScene(batch);assertAnalysisAccess(batch,input);assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有批次正在处理');active.add(batch.batchId);activeLibraries.add(batch.libraryPath.toLowerCase());let saves=Promise.resolve();const save=()=>{const next=saves.then(async()=>{Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));});saves=next.catch(()=>{});return next;};try{batch.phase=phase;delete batch.error;await save();await withModelContext({...modelContext(),modelConcurrency:planning.modelConcurrency,shouldPause:()=>input[jobOwner]?.status==='pausing'},()=>action(batch,save));await save();return view(batch);}catch(error){if(error.code==='ANALYSIS_PAUSED'){batch.phase='analysis';delete batch.error;await save();throw Object.assign(error,{batchId:batch.batchId,revision:batch.revision});}if(phase==='tree-running'&&batch.flow.treeProgress?.status==='running')batch.flow.treeProgress.status='failed';batch.phase='needs-review';batch.error={code:error.code??'BATCH_FAILED',message:error.message};for(const slice of batch.slices)if(['preparing','validating'].includes(slice.status)){slice.status='failed';slice.error=batch.error;}await save();throw Object.assign(error,{batchId:batch.batchId,revision:batch.revision});}finally{active.delete(batch.batchId);activeLibraries.delete(batch.libraryPath.toLowerCase());}}
+ async function operate(input,phase,action){let batch=await current(input);if(['analysis-running','classification-running','review-running','tree-running'].includes(phase))assertExecutionScene(batch);assertAnalysisAccess(batch,input);assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有批次正在处理');active.add(batch.batchId);activeLibraries.add(batch.libraryPath.toLowerCase());let saves=Promise.resolve();const save=()=>{const next=saves.then(async()=>{Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));});saves=next.catch(()=>{});return next;};try{batch.phase=phase;delete batch.error;await save();await withModelContext({...modelContext(),batchId:batch.batchId,modelConcurrency:planning.modelConcurrency,shouldPause:()=>input[jobOwner]?.status==='pausing'},()=>action(batch,save));await save();return view(batch);}catch(error){if(error.code==='ANALYSIS_PAUSED'){batch.phase='analysis';delete batch.error;await save();throw Object.assign(error,{batchId:batch.batchId,revision:batch.revision});}if(phase==='tree-running'&&batch.flow.treeProgress?.status==='running')batch.flow.treeProgress.status='failed';batch.phase='needs-review';batch.error={code:error.code??'BATCH_FAILED',message:error.message};for(const slice of batch.slices)if(['preparing','validating'].includes(slice.status)){slice.status='failed';slice.error=batch.error;}await save();throw Object.assign(error,{batchId:batch.batchId,revision:batch.revision});}finally{active.delete(batch.batchId);activeLibraries.delete(batch.libraryPath.toLowerCase());}}
  function sliceOf(batch,id){const slice=batch.slices.find(value=>value.sliceId===id);if(!slice)batchFail('INVALID_SLICE','整理分批不存在');return slice;}
  async function create(input){
   if(!strategies[input.mode])batchFail('INVALID_MODE','请选择可用整理模式');
@@ -58,6 +58,64 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
   await planning.commitIdentityMappings?.({sourceRoot:batch.sourceRoot,targetRoot:batch.sourceRoot,libraryPath:batch.libraryPath,executionId:'scan-'+randomUUID(),mappings:[{from:source.currentPath,to:found.currentPath,hash:source.hash}]});
   Object.assign(source,found,{status:source.analysis?'analyzed':'pending',selected:false,currentIdentity:found.identity});delete source.classification;delete source.frozenPlan;delete source.targetPath;invalidateSlices(batch);
  });}
+ const sourceWrites=new Map();
+ // 模型等待不占用整库事务；每次只在最新记录中更新对应材料。
+ function sourceTransaction(batchId,mutate){
+  const previous=sourceWrites.get(batchId)??Promise.resolve();
+  const next=previous.catch(()=>{}).then(async()=>{
+   for(let attempt=0;attempt<10;attempt++){
+    const current=await store.get(batchId);
+    try{return await store.update(batchId,current.revision,mutate);}catch(error){if(error.code!=='STALE_BATCH')throw error;}
+   }
+   batchFail('BATCH_BUSY','材料更新频繁，请稍后继续');
+  });
+  sourceWrites.set(batchId,next);return next.finally(()=>{if(sourceWrites.get(batchId)===next)sourceWrites.delete(batchId);});
+ }
+ async function processSource(job,sourceId,classifying=false){
+  let snapshot,source,version;
+  await sourceTransaction(job.batchId,async record=>{
+   assertExecutionScene(record);source=record.sources.find(item=>item.sourceId===sourceId);
+   if(!source)batchFail('INVALID_SOURCE','处理材料不在当前知识库');
+   snapshot=structuredClone(record);version={hash:source.hash,path:source.currentPath,reviewVersion:source.reviewVersion??0};
+   source.progress={status:'running',stage:classifying?'search':'preparing',startedAt:new Date().toISOString()};
+   record.phase='analysis-running';return record;
+  });
+  source=snapshot.sources.find(item=>item.sourceId===sourceId);
+  const same=current=>current&&current.hash===version.hash&&current.currentPath===version.path&&(current.reviewVersion??0)===version.reviewVersion;
+  const progress=async value=>sourceTransaction(job.batchId,record=>{
+   const current=record.sources.find(item=>item.sourceId===sourceId);
+   if(same(current)){current.progress={...current.progress,...value,status:'running'};record.flow[classifying?'classificationCurrent':'analysisCurrent']={sourceId,identity:current.currentIdentity,...current.progress};}
+   return record;
+  });
+  try{
+   const result=await withModelContext({...modelContext(),batchId:job.batchId,articleKey:sourceId,shouldPause:()=>job.status==='pausing'},async()=>{
+    const actual=digest(await readFile(source.currentPath));if(actual!==version.hash)batchFail('SOURCE_CHANGED','处理期间来源发生变化');
+    const discovered=(await discoverSources(snapshot)).sources.find(item=>path.resolve(item.currentPath)===path.resolve(source.currentPath));
+    if(!discovered)batchFail('SOURCE_CHANGED','来源已经不存在');
+    Object.assign(source,{ingestStatus:discovered.ingestStatus,associationHash:discovered.associationHash,rawIdentity:discovered.rawIdentity,skipReason:discovered.skipReason});
+    return classifying?(await strategy(snapshot).review({batch:snapshot,source,input:{action:'classify'},planning,onProgress:progress})).sourcePatch:strategy(snapshot).analyze({batch:snapshot,source,planning,onProgress:progress});
+   });
+   const actual=digest(await readFile(source.currentPath));
+   await sourceTransaction(job.batchId,record=>{
+    const current=record.sources.find(item=>item.sourceId===sourceId);
+    if(!same(current)||actual!==version.hash)return record;
+    // 已保存人工审核属于新的授权，不能被迟到模型结果取消。
+    if(current.status!=='reviewed')Object.assign(current,source,result);
+    else if(!current.analysis&&result.analysis)current.analysis=result.analysis;
+    current.progress={...current.progress,status:'complete'};
+    for(const field of ['analysisCurrent','classificationCurrent'])if(record.flow[field]?.sourceId===sourceId)record.flow[field].status='complete';
+    record.phase='file-review';return record;
+   });
+  }catch(error){
+   await sourceTransaction(job.batchId,record=>{
+    const current=record.sources.find(item=>item.sourceId===sourceId);if(!same(current))return record;
+    current.progress={...current.progress,status:error.code==='ANALYSIS_PAUSED'?'paused':'failed'};
+    if(error.code!=='ANALYSIS_PAUSED'){current.status=classifying?'classification-failed':'analysis-failed';current[classifying?'classificationError':'skipReason']=error.message;}
+    for(const field of ['analysisCurrent','classificationCurrent'])if(record.flow[field]?.sourceId===sourceId)record.flow[field].status=current.progress.status;
+    return record;
+   });throw error;
+  }
+ }
  async function analyzeNext(input){return operate(input,'analysis-running',async(batch,save)=>{const limit=Math.max(1,Math.min(5,Number(input.limit)||1));let count=0;for(const source of batch.sources){if(count>=limit)break;if(input.sourceId&&source.sourceId!==input.sourceId)continue;if(!['pending','analysis-failed','needs-analysis'].includes(source.status)&&!(source.status==='blocked'&&!source.analysis)&&!(input.retryUncertain===true&&source.status==='needs-information'))continue;try{
  const startedAt=new Date().toISOString();
  let progressWrites=Promise.resolve();const onProgress=progress=>{const next=progressWrites.then(async()=>{batch.flow.analysisCurrent={sourceId:source.sourceId,identity:source.currentIdentity,startedAt,status:'running',...progress};await save();});progressWrites=next.catch(()=>{});return next;};
@@ -137,7 +195,7 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
  async function prepareOriginal(input){if(input.writersPaused!==true)batchFail('WRITERS_NOT_PAUSED','请暂停写入');return operate(input,'authorization-running',async(batch,save)=>{const slice=sliceOf(batch,input.sliceId);if(slice.status!=='validated')batchFail('INVALID_PHASE','请先完成副本验证及恢复演练');await fresh(batch,batch.sources.filter(s=>slice.sourceIds.includes(s.sourceId)));if(slice.planManifestPath){const authorization=await original.prepare({planManifestPath:slice.planManifestPath,validationJournalPath:slice.validationJournalPath,recoveryReportPath:slice.recoveryReportPath,writersPaused:true});slice.authorizationPlanPath=authorization.authorizationPlanPath;slice.authorization={items:authorization.selectedItems,originalPath:authorization.originalPath,backupPath:authorization.backupPath,validationPath:authorization.validationPath,recoveryPath:authorization.recoveryPath};}slice.status='authorized';batch.phase='original-review';});}
  async function reconcile(batch,slice){const mappings=[];for(const item of slice.historicalResult?.items??[]){if(item.status!=='succeeded')continue;const from=path.join(batch.libraryPath,item.from),to=path.join(batch.libraryPath,item.to);mappings.push({from,to,sourceRoot:path.join(batch.libraryPath,'raw/sources'),targetRoot:path.join(batch.libraryPath,'raw/sources'),hash:digest(await readFile(to))});}mappings.push(...(slice.archiveResult?.committedMappings??[]));if(planning.commitIdentityMappings){const groups=new Map();for(const mapping of mappings){const sourceRoot=mapping.sourceRoot??batch.sourceRoot,targetRoot=mapping.targetRoot??path.join(batch.libraryPath,'raw/sources'),key=sourceRoot+'|'+targetRoot;if(!groups.has(key))groups.set(key,{sourceRoot,targetRoot,mappings:[]});groups.get(key).mappings.push(mapping);}let index=0;for(const group of groups.values())await planning.commitIdentityMappings({...group,executionId:slice.sliceId+':'+index++,libraryPath:batch.libraryPath});}for(const source of batch.sources){const mapping=mappings.find(m=>path.resolve(m.from)===path.resolve(source.currentPath));if(mapping){source.currentPath=mapping.to;source.currentIdentity=path.relative(mapping.targetRoot??batch.sourceRoot,mapping.to).replaceAll('\\','/');source.hash=mapping.hash;source.status='succeeded';source.selected=false;}else if(!['succeeded','skipped','blocked'].includes(source.status)){const actual=digest(await readFile(source.currentPath));if(actual!==source.hash){source.hash=actual;source.status='needs-analysis';source.selected=false;delete source.targetPath;}}}}
  async function applySlice(input){if(input.approved!==true||input.writersPaused!==true)batchFail('REVIEW_REQUIRED','请确认原库执行并暂停写入');return operate(input,'apply-running',async(batch,save)=>{const slice=sliceOf(batch,input.sliceId);if(slice.status==='complete'){batch.phase='batch-progress';return;}if(!['authorized','applying'].includes(slice.status)&&!(slice.status==='failed'&&slice.archiveResult))batchFail('INVALID_PHASE','请先审核原库执行方案');slice.status='applying';await save();if(slice.authorizationPlanPath){const resultPath=`${slice.authorizationPlanPath}.result.json`;const exists=await lstat(resultPath).catch(e=>{if(e.code==='ENOENT')return null;throw e;});const result=exists?await original.get({resultPath}):await original.execute({authorizationPlanPath:slice.authorizationPlanPath,approved:true,writersPaused:true});slice.originalResultPath=result.resultPath;slice.originalJournalPath=result.journalPath;slice.historicalResult={status:result.status,items:result.items,modelAttempts:result.modelAttempts,afterProof:result.afterProof,indexProof:result.indexProof,error:result.error};await save();if(!success(result)){slice.status='failed';batchFail('ORIGINAL_FAILED','原库执行未全部成功，保留现场并停止后续归档');}}if(slice.newFiles?.length){slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory});await save();if(slice.archiveResult.status!=='complete'){slice.status='failed';if(slice.archiveResult.error?.code==='STALE_ASSOCIATION')for(const source of batch.sources.filter(source=>slice.newFiles.some(file=>file.sourceId===source.sourceId))){source.status='needs-analysis';source.selected=false;delete source.targetPath;}batchFail('ARCHIVE_FAILED','新材料归档停止，请查看保留的来源与日志');}}await reconcile(batch,slice);slice.status='complete';batch.phase='batch-progress';});}
- const jobs=createBatchJobs({store,view,step:analyzeNext,classify:classifyNext,proposeTree:treeAction,
+ const jobs=createBatchJobs({store,view,step:analyzeNext,classify:classifyNext,processSource,proposeTree:treeAction,
   checkIdle:batch=>{assertExecutionScene(batch);assertReviewRefreshAllowed(batch);assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有批次正在处理');if(batch.slices.some(slice=>slice.status==='applying'))batchFail('EXECUTION_INTERRUPTED','原库执行已开始，请先处理执行结果');},
   prepare:async job=>{const batch=await store.get(job.batchId);await store.update(batch.batchId,batch.revision,async record=>{
    await refreshReviewState(record,{planning,checkAnalysisConfig:true});

@@ -21,7 +21,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    item.analysis=source.analysis;item.suggestion=source.confirmedName??source.suggestion??source.analysis?.suggestion;item.classification=source.classification;item.targetPath=source.targetPath??source.classification?.finalPath;item.manuallyEdited=source.manuallyEdited;item.error=source.classificationError??source.skipReason;
    item.tags=source.tags??source.classification?.tags??[];item.kind=source.kind;
    if(source.status==='needs-information'&&!item.classification)item.classification={category:null,decision:'insufficient-evidence',tags:[],reason:source.skipReason??'正文信息或可核验引用不足，保留原处',considered:[],evidence:[]};
-   item.stage=batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined;
+   item.progress=source.progress;item.stage=source.progress?.stage??(batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined);
    if(source.status==='succeeded'){item.status='archived';item.currentPath=source.currentPath;item.identity=source.currentIdentity;const stat=await lstat(source.currentPath,{bigint:true});item.fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);}
    else if(!item.available)item.status='missing';
    else if(['excluded','skipped'].includes(source.status))item.status='excluded';
