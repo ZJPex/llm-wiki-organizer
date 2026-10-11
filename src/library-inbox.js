@@ -21,7 +21,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    item.analysis=source.analysis;item.suggestion=source.confirmedName??source.suggestion??source.analysis?.suggestion;item.classification=source.classification;item.targetPath=source.targetPath??source.classification?.finalPath;item.manuallyEdited=source.manuallyEdited;item.error=source.classificationError??source.skipReason;
    item.tags=source.tags??source.classification?.tags??[];item.kind=source.kind;item.confirmedName=source.confirmedName;item.reviewVersion=source.reviewVersion??0;item.reviewBasis=source.reviewBasis;
    if(source.status==='needs-information'&&!item.classification)item.classification={category:null,decision:'insufficient-evidence',tags:[],reason:source.skipReason??'正文信息或可核验引用不足，保留原处',considered:[],evidence:[]};
-   item.progress=source.progress;item.stage=source.progress?.stage??(batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined);
+   item.failure=source.failure;item.progress=source.progress;item.stage=source.progress?.stage??(batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined);
    if(source.status==='succeeded'){item.status='archived';item.currentPath=source.currentPath;item.identity=source.currentIdentity;const stat=await lstat(source.currentPath,{bigint:true});item.fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);}
    else if(!item.available)item.status='missing';
    else if(['excluded','skipped'].includes(source.status))item.status='excluded';
@@ -63,9 +63,10 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
     const batch=await batches.create({...library,mode:'inbox',includeIdentities:pending.map(item=>item.identity)});
     const full=await snapshot(batch.batchId);
     for(const item of pending){const source=full.sources.find(source=>source.identity===item.identity);item.batchId=batch.batchId;item.sourceId=source.sourceId;item.status='waiting';}
-    Object.assign(saved,await save(saved));await batches.startAnalysis({batchId:batch.batchId});
+    Object.assign(saved,await save(saved));await batches.startAnalysis({batchId:batch.batchId,sourceIds:pending.map(item=>item.sourceId)});
    }
-   for(const batchId of new Set(chosen.filter(item=>item.batchId&&['paused','failed','waiting','needs-classification'].includes(item.status)).map(item=>item.batchId)))await batches.startAnalysis({batchId});
+   const resuming=chosen.filter(item=>item.batchId&&['paused','failed','waiting','needs-classification'].includes(item.status));
+   for(const batchId of new Set(resuming.map(item=>item.batchId)))await batches.startAnalysis({batchId,sourceIds:resuming.filter(item=>item.batchId===batchId).map(item=>item.sourceId)});
    await sync(saved);return view(await save(saved));
   }),
   review:input=>serial(input.id,async()=>{

@@ -13,6 +13,8 @@ import {createInboxStrategy} from '../src/inbox.js';
 async function waitFor(read,predicate){let value;for(let attempt=0;attempt<200;attempt++){value=await read();if(predicate(value))return value;await delay(10);}throw new Error('等待公开状态超时 '+JSON.stringify(value));}
 async function fixture(t,generate){
  const f=await migrationFixture(t),planning=createPlanningService({stateDirectory:path.join(f.root,'planning'),generate});
+ // 本用例只改变调度范围，固定配置在启动前写一次，避免创建另一库时截断正在读取的 JSON。
+ const configPath=path.join(f.root,'config.json');await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test',maxContextSize:1024}}));
  const batches=createBatchService({planning,stateDirectory:path.join(f.root,'batches'),strategies:{inbox:createInboxStrategy()}}),server=createApp({planning,batches});
  await listenForBrowser(server);t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
  const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(base+'/api/session')).json();
@@ -20,7 +22,6 @@ async function fixture(t,generate){
  const library=async(files,{libraryPath=f.backup.originalPath,wikiSourcePath=path.join(f.root,'upstream')}={})=>{
   const sourceRoot=path.join(f.root,'inbox-'+Math.random()),artifactRoot=path.join(f.root,'artifacts-'+Math.random());await mkdir(sourceRoot);await mkdir(artifactRoot);
   for(const [name,text] of Object.entries(files))await writeFile(path.join(sourceRoot,name),text);
-  const configPath=path.join(f.root,'config.json');await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test',maxContextSize:1024}}));
   return call('batches/create',{mode:'inbox',sourceRoot,artifactRoot,configPath,libraryPath,wikiSourcePath});
  };
  return {call,library,root:f.root};

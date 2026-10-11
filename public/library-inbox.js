@@ -44,6 +44,9 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    if(item.stage&&item.status==='analyzing'){const stage=({segment:'正文分段',synthesis:'摘要汇总',search:'分类检索',choice:'主分类选择',preparing:'检查来源'})[item.stage]??item.stage;info.append(element('p','当前阶段：'+stage+(item.progress?.totalSteps?` ${item.progress.completed??item.progress.step??0}/${item.progress.totalSteps}`:'')));}
    if(item.analysis?.summary)info.append(element('p',item.analysis.summary));
    for(const text of [item.invalidatedReason,item.error,drafts.get(item.itemId)?.invalidated?'审核依据已变化，旧选择已撤销；以下保留草稿，须重新审核。':null])if(text)info.append(element('p',text));
+   if(item.failure)info.append(element('p',`${item.failure.scope==='model'?'同模型配置已停止派发':'本篇文章已停止新请求'} · 已尝试 ${item.failure.attempts} 次；修复原因后重试，仅补齐未完成工作。`));
+   if(item.progress?.retry)info.append(element('p',`${item.progress.retry.status==='waiting'?'退避等待':'正在重试'} ${item.progress.retry.attempt}/${item.progress.retry.maxAttempts}`));
+   if(item.status==='failed'){const retry=control('重试此文件',()=>run(async()=>{await requestInbox('start',{id:libraryId,itemIds:[item.itemId]});await load();}));retry.disabled=busy||!item.available;info.append(retry);}
    if(item.classification?.decision){const reasons={existing:'复用已有分类','missing-category':'现有分类缺少合适归属','cross-topic':'跨主题主次待定','insufficient-evidence':'分类证据不足',undetermined:'主分类待定',manual:'人工选择主分类'};info.append(element('p',reasons[item.classification.decision]??'主分类待定'));}
    if(item.classification?.considered?.length)info.append(element('p','考虑的候选：'+item.classification.considered.map(value=>value||'Raw 根目录').join('、')));
    else if(['needs-classification','needs-information'].includes(item.status))info.append(element('p','没有可靠候选。'+(item.classification?.reason??'正文信息不足，请补充后重新处理。')));
