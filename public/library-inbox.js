@@ -1,4 +1,5 @@
 import {element} from './batch-ui.js';
+import {appendNewCategoryReview} from './new-category-review.js';
 
 export async function requestInbox(action,input){
  const {token}=await(await fetch('/api/session')).json();
@@ -31,7 +32,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   if(analysisProgress)featured.append(element('p',`分析处理完成 ${analysisProgress.completed} / ${analysisProgress.total} · 信息不足 ${counts['needs-information']??0} · 已归档 ${counts.archived??0}`));
   const toolbar=element('div');toolbar.className='review-toolbar';
   const analyze=control('开始整理所选文件',()=>run(async()=>{await requestInbox('start',{id:libraryId,itemIds:chosen().map(item=>item.itemId)});await load();}),true);
-  const review=control('保存所选审核',()=>run(async()=>{for(const item of chosen()){if(!['reviewable','needs-classification','confirmed'].includes(item.status))continue;const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis};if(draft.category===null)throw new Error('请明确选择主分类');const result=await requestInbox('review',{id:libraryId,itemId:item.itemId,...draft,manuallyEdited:drafts.has(item.itemId)}),saved=result.items.find(value=>value.itemId===item.itemId);if(saved)items=items.map(value=>value.itemId===item.itemId?saved:value);drafts.delete(item.itemId);}await load();}));
+  const review=control('保存所选审核',()=>run(async()=>{for(const item of chosen()){if(!['reviewable','needs-classification','confirmed'].includes(item.status))continue;const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis,acceptNewCategory:item.classification?.newCategoryAccepted===true,newCategoryHash:item.classification?.newCategory?.proposalHash};if(draft.category===null)throw new Error('请明确选择主分类');const result=await requestInbox('review',{id:libraryId,itemId:item.itemId,...draft,manuallyEdited:drafts.has(item.itemId)}),saved=result.items.find(value=>value.itemId===item.itemId);if(saved)items=items.map(value=>value.itemId===item.itemId?saved:value);drafts.delete(item.itemId);}await load();}));
   const paused=element('input');paused.type='checkbox';paused.id='inbox-writers-paused';paused.checked=writersPaused;paused.onchange=()=>writersPaused=paused.checked;const pausedLabel=element('label');pausedLabel.append(paused,'已暂停 Wiki 等外部写入');
   const archive=control('确认归档所选文件',()=>run(async()=>{if(!paused.checked)throw new Error('请先暂停外部写入并勾选确认');await requestInbox('archive',{id:libraryId,itemIds:chosen().map(item=>item.itemId),requestId:globalThis.crypto.randomUUID(),approved:true,writersPaused:true});selected.clear();await load();}));
   analyze.disabled=busy||!chosen().length;review.disabled=busy||!chosen().some(item=>['reviewable','needs-classification','confirmed'].includes(item.status));archive.disabled=busy||analysisActive||!chosen().length||chosen().some(item=>item.status!=='confirmed');
@@ -48,7 +49,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    else if(['needs-classification','needs-information'].includes(item.status))info.append(element('p','没有可靠候选。'+(item.classification?.reason??'正文信息不足，请补充后重新处理。')));
    const editable=['reviewable','needs-classification','confirmed'].includes(item.status);
    if(editable||drafts.has(item.itemId)){
-    const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis};
+    const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis,acceptNewCategory:item.classification?.newCategoryAccepted===true,newCategoryHash:item.classification?.newCategory?.proposalHash};
     if(!nodes.name){nodes.name=element('input');nodes.category=element('select');nodes.tags=element('input');const nameLabel=element('label','归档名称'),categoryLabel=element('label','主分类'),tagsLabel=element('label','其他主题标签（用顿号或逗号分隔）');nameLabel.append(nodes.name);categoryLabel.append(nodes.category);tagsLabel.append(nodes.tags);editor.append(nameLabel,categoryLabel,tagsLabel);}
     const {name,category,tags}=nodes;
     if(document.activeElement!==name)name.value=draft.name;name.disabled=busy||!!item.confirmedName;name.setAttribute('aria-label','归档名称 '+item.identity);name.oninput=()=>{draft.name=name.value;drafts.set(item.itemId,draft);};
@@ -60,6 +61,12 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
     if(document.activeElement!==tags)tags.value=(draft.tags??[]).join('、');tags.disabled=busy;tags.setAttribute('aria-label','主题标签 '+item.identity);tags.oninput=()=>{draft.tags=tags.value.split(/[,，、]/).map(value=>value.trim()).filter(Boolean);drafts.set(item.itemId,draft);};
     info.append(element('p','归档位置：'+(item.targetPath??'保存审核后生成')));if(item.classification?.reason)info.append(element('p',item.classification.reason));
    }else{editor.replaceChildren();delete nodes.name;delete nodes.category;delete nodes.tags;if(item.status==='archived')info.append(element('p','归档位置：'+item.targetPath),element('p','主题标签：'+(item.tags?.join('、')||'无')));}
+   if(!nodes.proposalHost){nodes.proposalHost=element('div');nodes.card.append(nodes.proposalHost);}
+   const proposalKey=JSON.stringify({classification:item.classification,status:item.status});
+   if(nodes.proposalKey!==proposalKey&&!Array.from(nodes.proposalHost.querySelectorAll('input')).includes(document.activeElement)){
+    nodes.proposalHost.replaceChildren();const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis,acceptNewCategory:item.classification?.newCategoryAccepted===true,newCategoryHash:item.classification?.newCategory?.proposalHash};appendNewCategoryReview(nodes.proposalHost,item,draft,()=>drafts.set(item.itemId,draft));nodes.proposalKey=proposalKey;
+   }
+   for(const input of nodes.proposalHost.querySelectorAll('input'))input.disabled=busy;
   }
   if(!tasks.querySelector('details')){const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const content=element('div');old.append(content);summary.onclick=()=>history(content);tasks.append(old);}
  }

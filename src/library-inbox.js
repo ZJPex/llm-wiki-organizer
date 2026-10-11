@@ -72,7 +72,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    await workspace.checked(input.id);if(!input.reviewBasis)batchFail('REVIEW_REQUIRED','请读取当前审核依据后保存');const saved=await record(input.id);await sync(saved);const [item]=select(saved,[input.itemId]);
    if(!['reviewable','confirmed','needs-classification'].includes(item.status))batchFail('REVIEW_REQUIRED','请等待正文分析后再保存审核');
    const batch=await snapshot(item.batchId);
-   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,reviewBasis:input.reviewBasis,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,manuallyEdited:input.manuallyEdited===true});
+   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,reviewBasis:input.reviewBasis,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,manuallyEdited:input.manuallyEdited===true});
    await sync(saved);return view(await save(saved));
   }),
   archive:input=>serial(input.id,async()=>{
@@ -81,7 +81,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(chosen.some(item=>!['confirmed','archived'].includes(item.status)))batchFail('REVIEW_REQUIRED','请先保存所选文件审核');
    if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','请等待分析完成后归档');
    if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>90)batchFail('INVALID_REQUEST','归档请求缺少稳定标识');
-   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,manuallyEdited:item.manuallyEdited===true}))});}
+   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,acceptNewCategory:item.classification.newCategoryAccepted===true,newCategoryHash:item.classification.newCategory?.proposalHash,manuallyEdited:item.manuallyEdited===true}))});}
    await sync(saved);return view(await save(saved));
   }),
  };

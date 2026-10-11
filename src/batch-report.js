@@ -8,7 +8,7 @@ export async function readArchiveReportEvidence(record){
   if(!slice.newFiles?.length||!slice.artifactDirectory||slice.archiveResult)continue;
   const file=path.join(slice.artifactDirectory,'inbox-archive.json');
   try{const stat=await lstat(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('归档日志不是独立普通文件');const journal=JSON.parse(await readFile(file,'utf8')),{journalHash,...unsigned}=journal;
-   const manifest={batchId:batch.batchId,sliceId:slice.sliceId,newFiles:slice.newFiles,watchConfig:slice.watchConfig};
+   const manifest={batchId:batch.batchId,sliceId:slice.sliceId,newFiles:slice.newFiles,watchConfig:slice.watchConfig,...(slice.newCategories?.length?{newCategories:slice.newCategories,allowedNewCategories:slice.allowedNewCategories??slice.newCategories}:{})};
    if(planDigest(unsigned)!==journalHash||journal.manifestHash!==planDigest(manifest))throw new Error('归档日志不属于当前冻结计划或内容已改变');
    slice.archiveResult={status:journal.status,items:journal.items,archiveJournalPath:file,error:journal.error};
   }catch(error){if(error.code!=='ENOENT')slice.error={code:'INVALID_JOURNAL',message:error.message};}
