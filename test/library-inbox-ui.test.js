@@ -33,3 +33,14 @@ test('收件箱页面明确勾选后启动，保存建议和人工编辑，再�
  await button('确认归档所选文件').click();assert.match(tasks.textContent,/已归档/);assert.match(tasks.textContent,/001 缓存\/人工名称.md/);assert.match(tasks.textContent,/主题标签：数据库、可靠性/);
  await home.load();assert.match(tasks.textContent,/已归档/);assert.equal(items[1].status,'pending');
 });
+
+test('待定方案呈现候选与理由，根分类须明确选择，不能把缺省选择当审核授权',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let reviews=0;
+ const item={itemId:'pending',identity:'待定.md',status:'needs-classification',available:true,suggestion:'待定.md',classification:{category:null,decision:'cross-topic',considered:['001 缓存','002 数据库'],options:['','001 缓存','002 数据库'],reason:'主要用途缺少明显主次'},tags:['数据库']};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};if(url==='/api/inbox/review'){reviews++;assert.equal(JSON.parse(options.body).category,'');}return {ok:true,json:async()=>({libraryId:'library',items:[item],analysisProgress:{completed:1,total:1}})};});
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();assert.match(tasks.textContent,/主要用途缺少明显主次/);assert.match(tasks.textContent,/考虑的候选：001 缓存、002 数据库/);assert.match(featured.textContent,/分析处理完成 1 \/ 1/);assert.match(featured.textContent,/可审核 0/);
+ const selected=tasks.querySelector('article').querySelector('input');selected.checked=true;await selected.dispatchEvent({type:'change'});const button=()=>tasks.querySelectorAll('button').find(node=>node.textContent==='保存所选审核');
+ assert.equal(tasks.querySelector('select').value,'__unselected__');await button().click();assert.equal(reviews,0);assert.match(tasks.textContent,/请明确选择主分类/);
+ const category=tasks.querySelector('select');category.value='';await category.dispatchEvent({type:'change'});await button().click();assert.equal(reviews,1);
+});

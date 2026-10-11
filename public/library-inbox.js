@@ -5,7 +5,7 @@ export async function requestInbox(action,input){
  const response=await fetch('/api/inbox/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)}),result=await response.json();
  if(!response.ok)throw Object.assign(new Error(result.error),result);return result;
 }
-const labels={pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失'};
+const labels={pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失',excluded:'已保留原处'};
 const control=(label,action,primary=false)=>{const button=element('button',label);button.type='button';button.className=primary?'primary':'';button.onclick=action;return button;};
 
 // 草稿与勾选独立于后台快照，轮询不覆盖用户尚未保存的修改。
@@ -36,7 +36,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   if(!items.length)tasks.append(element('p','收件箱还没有材料。点击“刷新发现文件”执行一次扫描，再勾选需要整理的文件。'));
   for(const item of items){
    const card=element('article');card.className='review-card';const heading=element('div');heading.className='section-heading';
-   const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||item.status==='archived';checkbox.setAttribute('aria-label','选择 '+item.identity);checkbox.onchange=()=>{checkbox.checked?selected.add(item.itemId):selected.delete(item.itemId);render();};
+   const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);checkbox.onchange=()=>{checkbox.checked?selected.add(item.itemId):selected.delete(item.itemId);render();};
    const title=element('label');title.append(checkbox,element('strong',item.identity));const badge=element('span',labels[item.status]??item.status);badge.className='status-badge';heading.append(title,badge);card.append(heading);
    if(item.stage&&item.status==='analyzing')card.append(element('p','当前阶段：'+item.stage));
    if(item.analysis?.summary)card.append(element('p',item.analysis.summary));

@@ -41,11 +41,15 @@ export async function recommendCategory({ entry, catalog, config, generate, onPr
     const candidates = catalog.categories.slice(start, start + 60).map(({ path, aliases }) => ({ path, aliases }));
     const result = await generate(config, { stage: 'category-search', content, categories: candidates });
     if (!Array.isArray(result.candidates) || result.candidates.length > 8 || result.candidates.some(p => typeof p !== 'string' || !candidates.some(c => c.path === p))) throw new Error('分类检索必须返回现有候选');
+    if(result.decision!==undefined&&!['existing','missing-category','cross-topic','insufficient-evidence','undetermined'].includes(result.decision))throw new Error('分类检索判定类型无效');
     result.candidates.forEach(p => selected.add(p));
     if(!result.candidates.length)unmatched.push({decision:result.decision,reason:typeof result.reason==='string'?result.reason.trim():'',tags:themeTags(result.tags)});
   }
-  if (!selected.size) return { status: 'needs-review', category: null, decision:unmatched.some(result=>result.decision==='insufficient-evidence')?'insufficient-evidence':'missing-category',tags:themeTags([...new Set(unmatched.flatMap(result=>result.tags))].slice(0,12)),reason:unmatched.map(result=>result.reason).filter(Boolean).join('；')||'未找到可靠的已有分类；现有类别不能提供可核验的归属，请审核缺类原因', evidence:[],considered: [] };
-  if (selected.size > 24) return { status: 'needs-review', category: null, decision:'cross-topic',tags:[],reason: '相关类别过多，请人工缩小分类范围', considered: [...selected] };
+  if (!selected.size){
+    const decision=unmatched.some(result=>result.decision==='insufficient-evidence')?'insufficient-evidence':unmatched.some(result=>result.decision==='cross-topic')?'cross-topic':unmatched.every(result=>result.decision==='missing-category'&&result.reason)?'missing-category':'undetermined';
+    return { status: 'needs-review', category: null, decision,tags:themeTags([...new Set(unmatched.flatMap(result=>result.tags))].slice(0,12)),reason:unmatched.map(result=>result.reason).filter(Boolean).join('；')||'未找到可靠的已有候选；尚无法判断类别缺失还是主次不清，请人工核实', evidence:[],considered: [] };
+  }
+  if (selected.size > 24) return { status: 'needs-review', category: null, decision:'undetermined',tags:[],reason: '相关类别过多，请人工缩小分类范围', considered: [...selected] };
   const candidates = catalog.categories.filter(c => selected.has(c.path));
   await onProgress?.({stage:'choice'});
   const result = await generate(config, { stage: 'category-choice', content, categories: candidates });

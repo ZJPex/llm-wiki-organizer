@@ -24,10 +24,12 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    item.stage=batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined;
    if(source.status==='succeeded'){item.status='archived';item.currentPath=source.currentPath;item.identity=source.currentIdentity;const stat=await lstat(source.currentPath,{bigint:true});item.fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);}
    else if(!item.available)item.status='missing';
+   else if(['excluded','skipped'].includes(source.status))item.status='excluded';
+   else if(source.status==='needs-analysis'){item.status='pending';delete item.classification;delete item.targetPath;delete item.suggestion;delete item.analysis;delete item.tags;}
    else if(source.status==='reviewed')item.status='confirmed';
    else if(source.status.endsWith('failed'))item.status='failed';
-   else if(source.analysis&&!source.analysis.uncertain){item.status=source.classification?.category!==null&&source.classification?.category!==undefined&&item.suggestion?'reviewable':'needs-classification';}
    else if(source.status==='needs-information'||source.status==='blocked')item.status='needs-information';
+   else if(source.analysis&&!source.analysis.uncertain){item.status=source.classification?.category!==null&&source.classification?.category!==undefined&&item.suggestion?'reviewable':'needs-classification';}
    else item.status=['running','pausing'].includes(batch.analysisJob.status)?'analyzing':['interrupted','paused','failed'].includes(batch.analysisJob.status)?'paused':'waiting';
   }
   return groups;

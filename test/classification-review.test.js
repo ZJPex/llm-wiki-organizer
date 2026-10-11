@@ -11,8 +11,8 @@ import {createPlanningService} from '../src/planning.js';
 import {createBatchService} from '../src/batches.js';
 import {createInboxStrategy} from '../src/inbox.js';
 
-async function fixture(t,{files=['跨主题'],choose,search}={}){
- const f=await migrationFixture(t),sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts'),configPath=path.join(f.root,'config.json'),libraryPath=f.backup.originalPath,categories=['001 缓存','002 数据库'];
+async function fixture(t,{files=['跨主题'],choose,search,categories=['001 缓存','002 数据库']}={}){
+ const f=await migrationFixture(t),sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts'),configPath=path.join(f.root,'config.json'),libraryPath=f.backup.originalPath;
  await mkdir(sourceRoot);await mkdir(artifactRoot);for(const category of categories)await mkdir(path.join(libraryPath,'raw/sources',category));
  await mkdir(path.join(f.root,'upstream/src/lib'),{recursive:true});await writeFile(path.join(f.root,'upstream/src/lib/source-watch-defaults.json'),JSON.stringify({enabled:false,autoIngest:false,includeExtensions:['.md'],excludeExtensions:[],excludeDirs:[],excludeGlobs:[]}));
  await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test'}}));
@@ -42,7 +42,7 @@ test('跨主题只提出一个主分类和其他主题标签，人工标签审�
  await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'跨主题.md',category:'001 缓存',tags:['数据库','可靠性'],manuallyEdited:true});
  assert.deepEqual((await f.read()).items[0].tags,['数据库','可靠性']);
  assert.match(await readFile(path.join(f.sourceRoot,'跨主题.md'),'utf8'),/^\[跨主题\]/);assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/001 缓存')),[]);
- await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'tags-archive',approved:true,writersPaused:true});const archived=await f.read();assert.equal(archived.items[0].status,'archived');assert.deepEqual(archived.items[0].tags,['数据库','可靠性']);
+ await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'tags-archive',approved:true,writersPaused:true});const archived=await f.read();assert.equal(archived.items[0].status,'archived');assert.deepEqual(archived.items[0].tags,['数据库','可靠性']);assert.equal(archived.suggestionProgress.complete,0);assert.equal(archived.suggestionProgress.archived,1);
  assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/001 缓存')),['跨主题.md']);assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/002 数据库')),[]);
  await new Promise(resolve=>f.server.close(resolve));const restarted=await f.start();assert.deepEqual((await restarted.request('inbox/list',{id:f.id})).items[0].tags,['数据库','可靠性']);
 });
@@ -69,4 +69,19 @@ test('分类响应失败单独计数且不能归档，人工非法标签不能�
  assert.deepEqual(item.tags,[]);assert.equal(item.classification.decision,'existing');
  await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'跨主题.md',category:'001 缓存',tags:[123]}));
  const restored=(await f.read()).items[0];assert.equal(restored.status,'reviewable');assert.deepEqual(restored.tags,[]);
+});
+
+test('没有候选时保留明确跨主题判定，未说明原因和检索范围过宽不冒充确实缺类',async t=>{
+ const f=await fixture(t,{files:['跨主题','未明'],search:request=>request.content.summary.includes('[跨主题]')?{candidates:[],decision:'cross-topic',reason:'缓存和事务无明显主次'}:{candidates:[]},choose:()=>{throw new Error('无候选不得发起选择');}});
+ const cross=f.ready.items.find(item=>item.identity==='跨主题.md'),unknown=f.ready.items.find(item=>item.identity==='未明.md');
+ assert.equal(cross.classification.decision,'cross-topic');assert.equal(unknown.classification.decision,'undetermined');assert.equal(f.ready.suggestionProgress.complete,0);
+ const broad=await fixture(t,{categories:Array.from({length:181},(_,index)=>'100 分类'+index),search:request=>({candidates:request.categories.slice(0,8).map(category=>category.path)}),choose:()=>{throw new Error('过宽候选须等待缩小范围');}});
+ assert.equal(broad.ready.items[0].classification.decision,'undetermined');assert.match(broad.ready.items[0].classification.reason,/范围/);
+});
+
+test('历史入口排除材料后收件箱保留历史结果，但不继续计为可审核建议',async t=>{
+ const f=await fixture(t,{choose:request=>({category:'001 缓存',reason:'正文主用途明确',evidence:request.content.evidence,uncertain:false})});assert.equal(f.ready.suggestionProgress.complete,1);
+ const page=await f.request('batches/list'),batch=await f.request('batches/get',{batchId:page.records[0].batchId});
+ await f.request('batches/reviewItem',{batchId:batch.batchId,revision:batch.revision,sourceId:batch.sources[0].sourceId,action:'exclude'});
+ const retained=await f.read();assert.equal(retained.items[0].status,'excluded');assert.equal(retained.suggestionProgress.complete,0);assert.equal(retained.suggestionProgress.excluded,1);
 });
