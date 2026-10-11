@@ -26,10 +26,15 @@ test('共享原库基线变化撤销验证并拒绝旧授权，保留逐份审�
  await f.call('applyHistoryPlan',{planHash:old.historyPlan.planHash,evidenceDigest:old.historyValidation.evidenceDigest,writersPaused:true,approved:true},400);await f.call('get');
  await f.call('continueHistoryValidation',{planHash:f.getBatch().historyPlan.planHash,writersPaused:true});b=await f.wait();assert.equal(b.historyValidation.status,'awaiting-apply',JSON.stringify(b.historyValidation));assert.equal(b.historyValidation.attemptCount,2);
 });
-test('分类目录变化保留全部正文分析并停止复用旧分类，重复检查不重复失效',async t=>{
+test('无关分类新增经依赖证明保留人工目标和全部正文，重复检查不重复失效',async t=>{
  const f=await historyFixture(t),before=f.getBatch();await mkdir(path.join(f.libraryPath,'raw/sources/002 网络'));
- let b=await f.call('refreshReview');assert.equal(b.counts.reviewed??0,0);assert.equal(b.sources.filter(s=>s.analysis).length,3);assert.ok(b.sources.every(s=>!s.classification));
+ let b=await f.call('refreshReview');assert.equal(b.counts.reviewed,3);assert.equal(b.sources.filter(s=>s.analysis).length,3);assert.ok(b.sources.every(s=>s.classification&&s.selected));assert.equal(b.invalidations.retainedClassificationSourceIds.length,3);
  assert.deepEqual(b.sources.map(s=>s.analysis),before.sources.map(s=>s.analysis));const versions=b.sources.map(s=>s.reviewVersion);b=await f.call('refreshReview');assert.deepEqual(b.sources.map(s=>s.reviewVersion),versions);
+});
+test('逐篇审核依赖仍有效也不能沿用分类变化前的完整历史验证',async t=>{
+ const f=await historyFixture(t);await f.call('startHistoryValidation',{planHash:f.getBatch().historyPlan.planHash,writersPaused:true});const verified=await f.wait(),calls=f.modelCalls();assert.equal(verified.historyValidation.status,'awaiting-apply');
+ await mkdir(path.join(f.libraryPath,'raw/sources/002 网络'));const checked=await f.call('refreshReview');assert.equal(checked.counts.reviewed,3);assert.equal(checked.historyValidation.status,'stale');assert.equal(checked.reviewCheck.sharedValidationStale,true);assert.equal(f.modelCalls(),calls);assert.ok(checked.sources.every(source=>source.selected&&source.analysis));
+ await f.call('applyHistoryPlan',{planHash:verified.historyPlan.planHash,evidenceDigest:verified.historyValidation.evidenceDigest,writersPaused:true,approved:true},400);
 });
 test('同正文新审核版本撤销旧选择且保留手动名称',()=>{
  const draft=reconcileReviewDraft({hash:'a',reviewVersion:2,reviewResetCategory:true},{hash:'a',reviewVersion:1,name:'手工.md',category:'旧目录',selected:true,manual:true});assert.equal(draft.selected,false);assert.equal(draft.name,'手工.md');assert.equal(draft.category,'旧目录');assert.equal(draft.invalidated,true);

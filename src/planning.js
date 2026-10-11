@@ -13,6 +13,7 @@ import {themeTags} from './classification-result.js';
 import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 import {compileNewCategory,checkedNewCategory} from './new-categories.js';
+import {classificationDependency,revalidatedClassification} from './classification-dependencies.js';
 import {createClassificationRules,classificationRuleState,effectiveClassificationRulesHash} from './classification-rules.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
@@ -77,6 +78,16 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
     modelConcurrency,
     getClassificationRules:async input=>{await state(input.sourceRoot,input.libraryPath);const ruleSnapshot=await classificationRules.read(input),{rules,rulesHash,libraryIdentity}=ruleSnapshot;const catalog=rules.length?await categoryCatalog(input.categoryRoot??path.join(input.libraryPath,'raw/sources')):null;return {classificationRules:rules.map(rule=>({...rule,status:classificationRuleState(rule,catalog)})),rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity};},
     resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
+    revalidateClassification:input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];
+      if(!entry?.classification||entry.hash!==hash(await readFile(await sourceFile(input.sourceRoot,input.identity),'utf8')))return null;
+      const catalog=await categoryCatalog(input.categoryRoot),ruleSnapshot=await classificationRules.read(input),expected=entry.frozenPlan?.rulesHash??entry.classification.rulesHash;
+      // 目录范围证明独立于偏好版本，不能使规则失效的旧建议恢复授权。
+      if(expected?expected!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)return null;
+      if(entry.classification.status!=='confirmed'&&(entry.classification.effectiveRulesHash?entry.classification.effectiveRulesHash!==effectiveClassificationRulesHash(ruleSnapshot,catalog):ruleSnapshot.rules.some(rule=>classificationRuleState(rule,catalog)==='active')))return null;
+      const patch=revalidatedClassification(entry.classification,entry.frozenPlan,catalog);
+      if(!patch)return null;Object.assign(entry,patch);await persist(saved.file,saved.data);return patch;
+    }),
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -230,7 +241,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
           if(compiled.newCategory){latest.data.newCategories[compiled.newCategory.proposalId]=compiled.newCategory;recommendation.category=compiled.newCategory.path;}
           else if(typeof compiled.category==='string')recommendation.decision='existing';
         }
-        current.classification={...recommendation,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.classification={...recommendation,dependency:classificationDependency(catalog,recommendation,{fullCatalog:!!newCategoryResult}),rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
         current.tags=themeTags(recommendation.tags);
         delete current.frozenPlan;await persist(latest.file,latest.data);return current;
       });
@@ -259,7 +270,8 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
       if(input.saveClassificationRule===true)ruleSnapshot=await classificationRules.save({...input,category:input.category,newCategoryHash:newCategory?.proposalHash,expectedRulesHash:ruleSnapshot.rulesHash});
       const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags,categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target,...(newCategory?{newCategory}:{}) };
-      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity:ruleSnapshot.libraryIdentity,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category,newCategory},{selected:true});frozen.classificationDependency=dependency;
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,dependency,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity:ruleSnapshot.libraryIdentity,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -276,8 +288,9 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target };
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category},{selected:true});frozen.classificationDependency=dependency;
       entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
-      entry.classification = { ...entry.classification,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog), category: input.category, finalPath: target, status: 'confirmed' };
+      entry.classification = { ...entry.classification,dependency,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog), category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
       return entry;
     }),

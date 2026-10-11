@@ -48,7 +48,15 @@ export async function refreshReviewState(batch,{planning,detectTargets=true,exec
  if(classificationRules)for(const source of pending){const expected=source.frozenPlan?.rulesHash??source.classification?.rulesHash;if((expected&&expected!==classificationRules.rulesHash)||(!expected&&source.classification&&classificationRules.classificationRules.length))mark(source,'CLASSIFICATION_RULES_CHANGED','知识库分类偏好变化；保留正文分析，重新检索并审核分类',{classification:true});}
  if(classificationRules)for(const source of pending){const expected=source.classification?.effectiveRulesHash;if(source.classification?.status!=='confirmed'&&((expected&&expected!==classificationRules.effectiveRulesHash)||(!expected&&source.classification&&classificationRules.classificationRules.some(rule=>rule.status==='active'))))mark(source,'EFFECTIVE_CLASSIFICATION_RULES_CHANGED','有效分类偏好变化；自动建议需复核，正文分析保留',{classification:true});}
  const catalogChanged=batch.flow.reviewCatalogHash?batch.flow.reviewCatalogHash!==catalog.hash:pending.some(source=>(source.classification?.catalogHash&&source.classification.catalogHash!==catalog.hash)||(source.frozenPlan?.catalogHash&&source.frozenPlan.catalogHash!==catalog.hash))||(batch.flow.tree?.catalogHash&&batch.flow.tree.catalogHash!==catalog.hash)||(batch.flow.reviewCatalogHash&&batch.flow.reviewCatalogHash!==catalog.hash);
- if(catalogChanged){for(const source of pending)if(source.analysis||source.confirmedName)mark(source,'CATALOG_CHANGED','分类目录或说明变化；无法证明全局分类检索不受影响，保留正文分析并重新规划分类',{classification:true});treeChanged=true;}
+ const retainedClassificationSourceIds=[];
+ if(catalogChanged){
+  for(const source of pending)if(source.analysis||source.confirmedName){
+   const patch=batch.mode==='inbox'&&!changes.has(source.sourceId)&&source.classification&&planning?.revalidateClassification?await planning.revalidateClassification({...batch,identity:source.currentIdentity??source.identity,categoryRoot:catalog.root}):null;
+   if(patch){Object.assign(source,patch);retainedClassificationSourceIds.push(source.sourceId);}
+   else mark(source,'CATALOG_CHANGED','分类检索或候选说明依赖已变化，保留正文分析并重新规划受影响分类',{classification:true});
+  }
+  treeChanged=true;
+ }
  batch.flow.reviewCatalogHash=catalog.hash;
  if(batch.mode==='restructure'&&batch.flow.tree){
   const tree=batch.flow.tree;
@@ -63,9 +71,9 @@ export async function refreshReviewState(batch,{planning,detectTargets=true,exec
   }
  }
  const evolution=batch.flow.evolutionPlan;
- if(evolution&&changes.size){const members=new Set((evolution.fileMappings??[]).map(mapping=>key(path.join(batch.libraryPath,'raw/sources',mapping.from))));if([...changes.values()].some(change=>members.has(key(change.source.currentPath)))||catalogChanged){for(const source of pending)if(members.has(key(source.currentPath))||source.evolution)mark(source,'DIRECTORY_DEPENDENCY','目录调整成员或目录基线变化，完整目录依赖范围阻断',{classification:true});evolution.invalidated=true;reasons.push({code:'DIRECTORY_DEPENDENCY',scope:'directory',message:'目录演化不得只执行未变化的一部分，需重新检查完整调整',sourceIds:pending.filter(source=>members.has(key(source.currentPath))).map(source=>source.sourceId),nextAction:'directory'});}}
+ if(evolution&&(changes.size||catalogChanged)){const members=new Set((evolution.fileMappings??[]).map(mapping=>key(path.join(batch.libraryPath,'raw/sources',mapping.from))));if([...changes.values()].some(change=>members.has(key(change.source.currentPath)))||catalogChanged){for(const source of pending)if(members.has(key(source.currentPath))||source.evolution)mark(source,'DIRECTORY_DEPENDENCY','目录调整成员或目录基线变化，完整目录依赖范围阻断',{classification:true});evolution.invalidated=true;reasons.push({code:'DIRECTORY_DEPENDENCY',scope:'directory',message:'目录演化不得只执行未变化的一部分，需重新检查完整调整',sourceIds:pending.filter(source=>members.has(key(source.currentPath))).map(source=>source.sourceId),nextAction:'directory'});}}
  let sharedStale=false;
- if(changes.size)sharedStale=staleValidation(batch,'来源、关联或分类审核变化，共享备份及验证证据需要重建');
+ if(changes.size||catalogChanged)sharedStale=staleValidation(batch,'来源、关联或分类目录变化，共享备份及验证证据需要重建');
  // 即使正文审核仍有效，库内无关变化也使整份备份证据失效；不把这个范围扩大为全文重分析。
  const validation=batch.flow.historyValidation;
  if(validation&&validation.status==='awaiting-apply'&&validation.backupReportPath&&batch.flow.historyApplication?.status!=='complete'){
@@ -80,6 +88,7 @@ export async function refreshReviewState(batch,{planning,detectTargets=true,exec
   if(retainedStatus)source.status=retainedStatus;
   if(planning?.invalidateReview)await planning.invalidateReview({...batch,identity:source.currentIdentity??source.identity,clearClassification:body||classification});
  }
- if(reasons.length){batch.flow.invalidations={revision:(batch.flow.invalidations?.revision??0)+1,checkedAt:new Date().toISOString(),affectedSourceIds:[...changes.keys()],retainedReviewCount:batch.sources.filter(source=>source.status==='reviewed').length,analysisRetainedCount:batch.sources.filter(source=>source.analysis).length,sharedValidationStale:sharedStale,reasons};batch.phase=batch.flow.tree?.status==='stale'?'tree-review':'file-review';}
- return {changedSourceIds:[...changes.keys()],reasons,sharedValidationStale:sharedStale};
+ if(reasons.length||catalogChanged){batch.flow.invalidations={revision:(batch.flow.invalidations?.revision??0)+1,checkedAt:new Date().toISOString(),catalogHash:catalog.hash,affectedSourceIds:[...changes.keys()],retainedClassificationSourceIds,retainedReviewCount:batch.sources.filter(source=>source.status==='reviewed').length,analysisRetainedCount:batch.sources.filter(source=>source.analysis).length,sharedValidationStale:sharedStale,reasons};batch.phase=batch.flow.tree?.status==='stale'?'tree-review':'file-review';}
+ batch.flow.reviewCheck={checkedAt:new Date().toISOString(),catalogHash:catalog.hash,affectedSourceIds:[...changes.keys()],retainedClassificationSourceIds:pending.filter(source=>source.classification&&!changes.has(source.sourceId)).map(source=>source.sourceId),analysisNeededSourceIds:pending.filter(source=>['pending','needs-analysis','analysis-failed'].includes(source.status)).map(source=>source.sourceId),classificationNeededSourceIds:pending.filter(source=>['analyzed','named','classification-failed'].includes(source.status)).map(source=>source.sourceId),reviewedSourceIds:pending.filter(source=>source.status==='reviewed').map(source=>source.sourceId),archivedSourceIds:batch.sources.filter(terminal).map(source=>source.sourceId),resumeSourceIds:batch.flow.analysisJob?.sourceIds??null,sharedValidationStale:sharedStale};
+ return {changedSourceIds:[...changes.keys()],retainedClassificationSourceIds,catalogHash:catalog.hash,reasons,sharedValidationStale:sharedStale};
 }
