@@ -9,6 +9,7 @@ import {categoryCatalog,planDigest} from './categories.js';
 import {validateName} from './planning.js';
 import {localReferences} from './links.js';
 import {selectedEvolution,sourceDirectoryDependency} from './directory-dependencies.js';
+import {assertNewCategoryBaseline,installNewCategory} from './new-categories.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
@@ -111,7 +112,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
           const named=await planning.confirm({...base,name:input.name});
           return {sourcePatch:{...named,...result.sourcePatch,manuallyEdited:input.manuallyEdited===true}};
         }
-        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category,tags:input.tags});
+        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash});
         return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true,manuallyEdited:input.manuallyEdited===true}};
       }
       if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
@@ -151,7 +152,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
     },
     async prepare({batch,selected}) {
       const discovered=await currentSources(batch),categoryRoot=path.join(batch.libraryPath,'raw/sources');
-      const evolution=selectedEvolution(batch,selected),mappings=[],newFiles=[],destinations=new Set();
+      const evolution=selectedEvolution(batch,selected),mappings=[],newFiles=[],newCategories=[],destinations=new Set();
       for(const source of selected) {
         const current=discovered.find(value=>key(value.currentPath)===key(source.currentPath));
         if(!current||current.hash!==source.hash)fail('STALE_SOURCE','来源记录已变化');
@@ -159,6 +160,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(source.status!=='reviewed'||!source.frozenPlan||!source.targetPath)fail('REVIEW_REQUIRED','请先完成命名、分类和路径审核');
         const {planHash,...unsigned}=source.frozenPlan;if(planDigest(unsigned)!==planHash)fail('INVALID_PLAN','文件审核计划已损坏');
         if((await categoryCatalog(categoryRoot)).hash!==source.frozenPlan.catalogHash)fail('STALE_PLAN','分类树变化，需要重新审核');
+        if(source.frozenPlan.newCategory){if(source.ingestStatus!=='new')fail('HISTORY_REQUIRED','历史材料新增类别须经过完整验证与恢复流程');newCategories.push(source.frozenPlan.newCategory);}
         await checkedFile(source.currentPath,source.hash);await checkTarget(categoryRoot,source.targetPath,source.currentPath);
         if(destinations.has(key(source.targetPath)))fail('TARGET_EXISTS','批次中存在重复目标');destinations.add(key(source.targetPath));
         if(source.ingestStatus==='historical')mappings.push({id:source.sourceId,from:`raw/sources/${current.rawIdentity}`,to:path.relative(batch.libraryPath,source.targetPath).replaceAll('\\','/')});
@@ -173,14 +175,14 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(!existing)mappings.push({id:`history:${move.from}`,from,to:`raw/sources/${move.to}`});
       }
       await checkNewLinks(batch,newFiles);
-      return {historicalRequest:mappings.length?{mappings,...(evolution?{evolutionPlan:evolution}:{})}:null,newFiles,affectedSourceIds:selected.map(source=>source.sourceId),watchConfig:await watchSettings(batch)};
+      return {historicalRequest:mappings.length?{mappings,...(evolution?{evolutionPlan:evolution}:{})}:null,newFiles,...(newCategories.length?{newCategories}:{}),affectedSourceIds:selected.map(source=>source.sourceId),watchConfig:await watchSettings(batch)};
     },
     async archive({batch,slice,artifactDirectory}) {
       const raw=path.join(batch.libraryPath,'raw/sources'),sourceRoot=await safePath(batch.sourceRoot);
       await safePath(artifactDirectory);
       if(inside(batch.libraryPath,artifactDirectory)||inside(batch.sourceRoot,artifactDirectory))fail('UNSAFE_JOURNAL','归档日志必须在库与 Inbox 之外');
       const archiveJournalPath=path.join(artifactDirectory,'inbox-archive.json');
-      const manifest={batchId:batch.batchId,sliceId:slice.sliceId,newFiles:slice.newFiles,watchConfig:slice.watchConfig};
+      const manifest={batchId:batch.batchId,sliceId:slice.sliceId,newFiles:slice.newFiles,watchConfig:slice.watchConfig,...(slice.newCategories?.length?{newCategories:slice.newCategories,allowedNewCategories:slice.allowedNewCategories??slice.newCategories}:{})};
       const manifestHash=planDigest(manifest);
       let journal;
       try{journal=JSON.parse(await readFile(archiveJournalPath,'utf8'));const {journalHash,...unsigned}=journal;if(journalHash!==planDigest(unsigned)||journal.manifestHash!==manifestHash)fail('INVALID_JOURNAL','归档日志或冻结计划变化');}
@@ -198,6 +200,10 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         await checkAssociations();
         await checkNewLinks(batch,journal.items.filter(item=>item.status!=='succeeded'));
         for(const item of journal.items.filter(item=>item.status==='pending')){await checkedFile(item.from,item.hash);await checkTarget(raw,item.to,item.from);}
+        for(const proposal of journal.newCategories??[]){
+          await assertNewCategoryBaseline(raw,proposal.catalogHash,journal.allowedNewCategories);
+          await installNewCategory(raw,proposal,{intent:async()=>{(journal.categoryEvents??=[]).push({proposalHash:proposal.proposalHash,path:proposal.path,status:'create-intent'});await save();await checkpoint('before-category-create',proposal);},complete:async status=>{(journal.categoryEvents??=[]).push({proposalHash:proposal.proposalHash,path:proposal.path,status});await save();await checkpoint('category-created',proposal);}});
+        }
         for(const item of journal.items) {
           if(item.status==='succeeded')continue;
           if(key(item.from)===key(item.to)){await checkedFile(item.from,item.hash);item.status='succeeded';await save();continue;}

@@ -43,6 +43,8 @@ export function createNewArchiveWorkflow({store,view,operate,strategy,planning,f
     }catch(error){outcome.reason={code:error.code??'CHECK_FAILED',message:error.message};source.categoryConfirmationError=error.message;source.selected=false;}
     await save();
    }
+   const authorizedCategories=[...new Map(run.items.filter(item=>item.status==='ready').flatMap(item=>batch.slices.find(slice=>slice.sliceId===item.sliceId).newCategories??[]).map(proposal=>[proposal.proposalHash,proposal])).values()];
+   for(const outcome of run.items.filter(item=>item.status==='ready')){const slice=batch.slices.find(slice=>slice.sliceId===outcome.sliceId);if(slice.newCategories?.length)slice.allowedNewCategories=authorizedCategories;}
    run.status='archiving';await save();
    for(const outcome of run.items.filter(item=>item.status==='ready')){
    const slice=batch.slices.find(s=>s.sliceId===outcome.sliceId);slice.status='applying';outcome.status='running';await save();

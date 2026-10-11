@@ -12,6 +12,7 @@ import {analysisVersion,sameAnalysisVersion} from './analysis-version.js';
 import {themeTags} from './classification-result.js';
 import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
+import {compileNewCategory,checkedNewCategory} from './new-categories.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -207,12 +208,23 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       if(config&&!sameAnalysisVersion(entry.analysisVersion,analysisVersion(config)))throw new Error('全文分析依据已失效，请先重新分析');
       const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
+      let newCategoryResult;
+      if(recommendation.decision==='missing-category'&&!modelContext()?.shouldPause?.()){
+        await input.onProgress?.({stage:'new-category'});
+        newCategoryResult=await generate(config,{stage:'new-category',content:entry.analysis,categories:catalog.categories});
+      }
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
       return serial(async()=>{
         const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
         if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
         if(config&&(!sameAnalysisVersion(current.analysisVersion,analysisVersion(config))||!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),analysisVersion(config))))throw new Error('分类规划期间模型配置变化，请重新分析');
         if(current.classification?.status==='confirmed')return current;
+        if(newCategoryResult){
+          const compiled=compileNewCategory(newCategoryResult,catalog,latest.data.newCategories??={});
+          Object.assign(recommendation,compiled);
+          if(compiled.newCategory){latest.data.newCategories[compiled.newCategory.proposalId]=compiled.newCategory;recommendation.category=compiled.newCategory.path;}
+          else if(typeof compiled.category==='string')recommendation.decision='existing';
+        }
         current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
         current.tags=themeTags(recommendation.tags);
         delete current.frozenPlan;await persist(latest.file,latest.data);return current;
@@ -229,11 +241,16 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
-      const target = await finalTarget(catalog, input.category, name, file);
+      let newCategory;
+      if(entry.classification.newCategory?.path===input.category){
+        newCategory=checkedNewCategory(entry.classification.newCategory);
+        if(input.acceptNewCategory!==true||input.newCategoryHash!==newCategory.proposalHash)throw Object.assign(new Error('请明确审核并接受新增分类名称、父级和查找收益'),{code:'NEW_CATEGORY_REVIEW_REQUIRED'});
+      }
+      const target = newCategory?path.join(catalog.root,newCategory.path,name):await finalTarget(catalog, input.category, name, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
-      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target,...(newCategory?{newCategory}:{}) };
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
