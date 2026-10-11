@@ -19,9 +19,9 @@ async function fixture(t){
  await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test'}}));
  await mkdir(path.join(f.root,'upstream/src/lib'),{recursive:true});await writeFile(path.join(f.root,'upstream/src/lib/source-watch-defaults.json'),JSON.stringify({enabled:false,autoIngest:false,includeExtensions:['.md'],excludeExtensions:[],excludeDirs:[],excludeGlobs:[]}));
  const settings={libraryPath:f.backup.originalPath,sourceRoot,artifactRoot,configPath,wikiSourcePath:path.join(f.root,'upstream')},calls=[];
- async function start(planningName='planning'){
+ async function start(planningName='planning',beforeRequest=()=>{}){
   const planning=createPlanningService({stateDirectory:path.join(f.root,planningName),generate:async(_,request)=>{
-   calls.push(request.stage);if(request.stage==='category-search')return {candidates:['']};
+   calls.push(request.stage);await beforeRequest(request);if(request.stage==='category-search')return {candidates:['']};
    if(request.stage==='category-choice')return {category:'',reason:'缓存主题',evidence:[request.content.evidence[0]],uncertain:false};
    return {title:'缓存主题',summary:request.content,evidence:[request.content.slice(0,12)],uncertain:false};
   }}),batches=createBatchService({planning,stateDirectory:path.join(f.root,'batches'),strategies:{inbox:createInboxStrategy()}}),workspace=createWorkspaceService({batches,stateDirectory:path.join(f.root,'settings')});
@@ -135,4 +135,24 @@ test('历史摘要不输出配置凭据或旧结果中的私有绝对路径',asy
  const f=await fixture(t);await writeFile(f.settings.configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test',apiKey:'private-key'}}));const old=await f.legacy();
  const store=createBatchStore({stateDirectory:path.join(f.root,'batches')});await store.update(old.batchId,old.revision,value=>{value.sources[0].confirmedName='private-key.md';value.sources[0].tags=['private-key',path.join(f.root,'private-data')];return value;});
  const history=await f.request('inbox/history',{id:f.id}),text=JSON.stringify(history);assert.equal(text.includes('private-key'),false);assert.equal(text.includes(f.root.replaceAll('\\','\\\\')),false);assert.match(text,/已隐藏/);
+});
+
+test('旧任务仍在派发时不复制其结果或重复开始；静止后再刷新直接复用',async t=>{
+ const f=await fixture(t);let release,reached;const gate=new Promise(resolve=>release=resolve),ready=new Promise(resolve=>reached=resolve);
+ const active=await f.start('ongoing',async request=>{if(request.stage==='category-choice'){reached();await gate;}});
+ const old=await active.request('batches/create',{...f.settings,mode:'inbox'});await active.request('batches/startAnalysis',{batchId:old.batchId});await ready;
+ try{
+  const before=f.calls.length,scan=await f.request('inbox/scan',{id:f.id});assert.equal(scan.items[0].status,'legacy-active');assert.equal(scan.items[0].analysis,undefined);assert.equal(f.calls.length,before);
+  await assert.rejects(f.request('inbox/start',{id:f.id,itemIds:[scan.items[0].itemId]}),{code:'BATCH_BUSY'});
+ }finally{
+  release();for(let i=0;i<100;i++){const state=await active.request('batches/get',{batchId:old.batchId});if(!['running','pausing'].includes(state.analysisJob.status))break;await new Promise(resolve=>setTimeout(resolve,20));}
+ }
+ const scan=await f.request('inbox/scan',{id:f.id});assert.ok(scan.items[0].analysis);assert.ok(['needs-classification','reviewable'].includes(scan.items[0].status));
+});
+
+test('接入后新增的人工确认也保留为来源；知识库身份改变后不能静默丢弃或按新旧覆盖',async t=>{
+ const f=await fixture(t);await f.legacy();const scanned=await f.request('inbox/scan',{id:f.id}),item=scanned.items[0];
+ await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'再次人工修改.md',category:'',reviewBasis:item.reviewBasis,manuallyEdited:true});
+ await writeFile(path.join(f.settings.libraryPath,'.llm-wiki/project.json'),JSON.stringify({id:'replacement-project',createdAt:2}));await f.request('workspace/save',f.settings);
+ const changed=await f.request('inbox/scan',{id:f.id});assert.equal(changed.items[0].status,'legacy-conflict');assert.deepEqual(changed.items[0].legacyChoices.map(value=>value.name).sort(),['人工缓存.md','再次人工修改.md']);assert.equal(changed.items[0].legacyChoices.every(value=>value.confirmed===false),true);
 });

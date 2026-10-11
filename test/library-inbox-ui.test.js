@@ -19,6 +19,17 @@ test('旧结果冲突呈现来源和依据，明确选择后才接入，库内�
  await tasks.querySelector('summary').click();assert.ok(tasks.querySelectorAll('a').some(node=>node.getAttribute('href')==='/task-report?batchId=first'));assert.match(tasks.textContent,/来源：first:source/);
 });
 
+test('相同知识库 ID 的物理或来源范围改变后移除旧编辑节点、选择与草稿',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);
+ let scopeId='original',item={itemId:'old',identity:'旧文件.md',status:'reviewable',available:true,suggestion:'旧建议.md',classification:{category:'',options:['']}};
+ t.mock.method(globalThis,'fetch',async url=>({ok:true,json:async()=>url==='/api/session'?{token:'test'}:structuredClone({libraryId:'library',scopeId,items:[item]})}));
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();const selected=tasks.querySelector('article input');selected.checked=true;await selected.dispatchEvent({type:'change'});
+ const name=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 旧文件.md');name.value='未保存旧草稿.md';await name.dispatchEvent({type:'input'});
+ scopeId='replacement';item={...item,itemId:'new',identity:'新文件.md',suggestion:'新建议.md'};await home.load();
+ assert.equal(tasks.querySelectorAll('article').length,1);assert.equal(tasks.querySelectorAll('input').includes(name),false);assert.equal(tasks.querySelector('article input').checked,false);assert.equal(tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 新文件.md').value,'新建议.md');
+});
+
 test('后台刷新独立更新另一材料进度，保留当前输入节点、焦点、光标与勾选',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);

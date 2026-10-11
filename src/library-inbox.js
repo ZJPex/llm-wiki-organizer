@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {createBatchStore,batchFail} from './batch-store.js';
 import {discoverSources} from './batch-sources.js';
 import {suggestionProgress} from './classification-result.js';
+import {planDigest} from './categories.js';
 
 const queues=new Map();
 // 文件身份与路径分开保存；扫描只发现来源，不发起模型请求。
@@ -50,12 +51,13 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    for(const field of ['batchId','sourceId','analysis','classification','suggestion','confirmedName','reviewBasis','targetPath','manuallyEdited','stage','tags','kind','legacyOrigin'])delete item[field];item.status='pending';
   }
   if(candidates.some(value=>value.requiresRecovery)){item.status='legacy-recovery';item.invalidatedReason='存在旧执行现场，请从原任务报告查询或恢复';return;}
+  if(candidates.some(value=>value.active)){item.status='legacy-active';item.invalidatedReason='旧任务仍在运行，请等待静止后刷新接入';return;}
   const valid=candidates.filter(value=>value.valid);
   if(new Set(valid.map(value=>value.resultFingerprint)).size>1){item.status='legacy-conflict';item.legacyChoices=valid;item.invalidatedReason='同一文件有多份不同旧结果，请明确选择来源';return;}
   if(valid.length){const candidate=valid.sort((a,b)=>a.originId.localeCompare(b.originId))[0],adopted=await batches.adoptLegacy(library,item,candidate.originId);Object.assign(item,{batchId:adopted.batchId,sourceId:adopted.sourceId,legacyOrigin:candidate.originId,invalidatedReason:candidate.reason});delete item.legacyChoices;await sync(saved);}
   else if(candidates.length)item.invalidatedReason=candidates.map(value=>value.reason).join('；');
  }
- const view=value=>({libraryId:value.libraryId,revision:value.revision,analysisActive:value.analysisActive??false,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
+ const view=value=>({libraryId:value.libraryId,revision:value.revision,scopeId:planDigest(value.scope),analysisActive:value.analysisActive??false,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
   history:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id),saved=await records(input.id),history=[...await batches.legacyHistory(library),...saved.flatMap(value=>value.items).flatMap(item=>item.history??[])];return {libraryId:input.id,records:[...new Map(history.filter(value=>value.originId).map(value=>[value.originId,value])).values()]};}),
@@ -84,6 +86,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   }),
   start:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),groups=await sync(saved),chosen=select(saved,input.itemIds);
+   if(chosen.some(item=>item.status==='legacy-active'))batchFail('BATCH_BUSY','旧任务仍在运行，请等待静止后刷新接入');
    if(chosen.some(item=>item.status==='legacy-recovery'))batchFail('EXECUTION_INTERRUPTED','存在旧执行现场，请从原任务报告查询或恢复');
    if(chosen.some(item=>item.status==='legacy-conflict'))batchFail('LEGACY_CHOICE_REQUIRED','请先明确选择旧结果来源');
    if(chosen.some(item=>!item.available||item.ingestStatus==='uncertain'))batchFail('INVALID_SELECTION','来源不可用或关联不明确');

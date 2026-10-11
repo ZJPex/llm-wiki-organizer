@@ -7,12 +7,12 @@ export async function requestInbox(action,input){
  const response=await fetch('/api/inbox/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)}),result=await response.json();
  if(!response.ok)throw Object.assign(new Error(result.error),result);return result;
 }
-const labels={'legacy-conflict':'待选择旧结果','legacy-recovery':'旧任务待恢复',pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失',excluded:'已保留原处'};
+const labels={'legacy-conflict':'待选择旧结果','legacy-recovery':'旧任务待恢复','legacy-active':'旧任务处理中',pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失',excluded:'已保留原处'};
 const control=(label,action,primary=false)=>{const button=element('button',label);button.type='button';button.className=primary?'primary':'';button.onclick=action;return button;};
 
 // 草稿与勾选独立于后台快照，轮询不覆盖用户尚未保存的修改。
 export function createLibraryInboxHome({tasks,featured,more,getLibrary,history}){
- let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,writersPaused=false,analysisProgress=null,analysisActive=false;
+ let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,scopeId=null,writersPaused=false,analysisProgress=null,analysisActive=false;
  const cards=new Map(),toolbarHost=element('div'),listHost=element('div'),empty=element('p','收件箱还没有材料。点击“刷新发现文件”执行一次扫描，再勾选需要整理的文件。');
  const message=element('p');message.setAttribute('role','status');
  async function run(action){if(busy)return;busy=true;const version=generation;message.textContent='正在处理…';try{await action();if(version===generation)message.textContent='操作已保存';}catch(error){if(version===generation)message.textContent=error.message;}finally{if(version===generation){busy=false;render();}}}
@@ -20,11 +20,12 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
  async function load(action='list'){
   const library=getLibrary();if(!library?.valid){clear(library?'设置已失效，请先修正设置。':'请先保存知识库设置。');return;}
   const version=generation,result=await requestInbox(action,{id:library.id});if(version!==generation||getLibrary()?.id!==library.id)return;
+  if(scopeId&&result.scopeId&&scopeId!==result.scopeId){selected.clear();drafts.clear();cards.clear();listHost.replaceChildren();message.textContent='知识库或来源范围已变化，旧选择与草稿已撤销。';}scopeId=result.scopeId??null;
   libraryId=library.id;
   for(const item of result.items){const before=items.find(value=>value.itemId===item.itemId);if(before&&(before.hash!==item.hash||(before.reviewBasis&&JSON.stringify(before.reviewBasis)!==JSON.stringify(item.reviewBasis))||(before.reviewVersion??0)!==(item.reviewVersion??0))){selected.delete(item.itemId);const draft=drafts.get(item.itemId);if(draft)draft.invalidated=true;}}
   items=result.items;analysisProgress=result.analysisProgress;analysisActive=result.analysisActive??items.some(item=>['analyzing','waiting'].includes(item.status));render();
  }
- function clear(text='正在加载收件箱…'){generation++;busy=false;items=[];selected=new Set();drafts=new Map();cards.clear();listHost.replaceChildren();libraryId=null;tasks.replaceChildren(element('p',text));featured.replaceChildren();more.hidden=true;}
+ function clear(text='正在加载收件箱…'){generation++;busy=false;items=[];selected=new Set();drafts=new Map();cards.clear();listHost.replaceChildren();libraryId=null;scopeId=null;tasks.replaceChildren(element('p',text));featured.replaceChildren();more.hidden=true;}
  function render(){
   if(libraryId!==getLibrary()?.id)return;
   if(toolbarHost.parentNode!==tasks)tasks.replaceChildren(toolbarHost,empty,listHost);featured.replaceChildren();more.hidden=true;
@@ -41,7 +42,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   for(const item of items){
    let nodes=cards.get(item.itemId);
    if(!nodes){const card=element('article'),heading=element('div'),checkbox=element('input'),title=element('strong'),badge=element('span'),info=element('div'),editor=element('div');card.className='review-card';heading.className='section-heading';checkbox.type='checkbox';checkbox.onchange=()=>{if(checkbox.checked){selected.add(item.itemId);const draft=drafts.get(item.itemId);if(draft?.invalidated){draft.reviewBasis=items.find(value=>value.itemId===item.itemId)?.reviewBasis;draft.invalidated=false;}}else selected.delete(item.itemId);render();};const label=element('label');label.append(checkbox,title);heading.append(label,badge);card.append(heading,info,editor);nodes={card,checkbox,title,badge,info,editor};cards.set(item.itemId,nodes);listHost.append(card);}
-   const {checkbox,title,badge,info,editor}=nodes;checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded','legacy-conflict','legacy-recovery'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);title.textContent=item.identity;badge.textContent=labels[item.status]??item.status;badge.className='status-badge';info.replaceChildren();
+   const {checkbox,title,badge,info,editor}=nodes;checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded','legacy-conflict','legacy-recovery','legacy-active'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);title.textContent=item.identity;badge.textContent=labels[item.status]??item.status;badge.className='status-badge';info.replaceChildren();
    if(item.stage&&item.status==='analyzing'){const stage=({segment:'正文分段',synthesis:'摘要汇总',search:'分类检索',choice:'主分类选择',preparing:'检查来源'})[item.stage]??item.stage;info.append(element('p','当前阶段：'+stage+(item.progress?.totalSteps?` ${item.progress.completed??item.progress.step??0}/${item.progress.totalSteps}`:'')));}
    if(item.analysis?.summary)info.append(element('p',item.analysis.summary));
    if(item.legacyChoices){info.append(element('p','旧结果存在冲突，请核对来源与依据后选择。'));for(const result of item.legacyChoices){const row=appendLegacyResult(info,result),choose=control('采用此旧结果：'+(result.name??'未命名'),()=>run(async()=>{await requestInbox('chooseLegacy',{id:libraryId,itemId:item.itemId,originId:result.originId});await load();}));choose.disabled=busy;row.append(choose);}}
