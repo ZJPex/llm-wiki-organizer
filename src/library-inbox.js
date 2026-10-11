@@ -39,7 +39,10 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   const groups=await sync(saved);if(saved.analysisActive)batchFail('INBOX_BUSY','请先安全暂停并等待在途结果保存后复核');
   const checked=[];for(const batch of groups.values())checked.push(await batches.refreshReview({batchId:batch.batchId,revision:batch.revision}));
   await sync(saved);
-  const mapIds=(batch,field)=>saved.items.filter(item=>item.batchId===batch.batchId&&batch.reviewCheck?.[field]?.includes(item.sourceId)).map(item=>item.itemId);
+  const mapIds=(batch,field)=>{
+   const check=batch.reviewCheck,ids=field==='resumeSourceIds'?[...(check?.analysisNeededSourceIds??[]),...(check?.classificationNeededSourceIds??[])].filter(id=>!check?.resumeSourceIds||check.resumeSourceIds.includes(id)):check?.[field]??[];
+   return saved.items.filter(item=>item.batchId===batch.batchId&&ids.includes(item.sourceId)).map(item=>item.itemId);
+  };
   saved.reviewCheck={status:'checked',checkedAt:new Date().toISOString(),sharedValidationStale:checked.some(batch=>batch.reviewCheck?.sharedValidationStale),...Object.fromEntries([['affectedItemIds','affectedSourceIds'],['retainedItemIds','retainedClassificationSourceIds'],['analysisNeededItemIds','analysisNeededSourceIds'],['classificationNeededItemIds','classificationNeededSourceIds'],['reviewedItemIds','reviewedSourceIds'],['archivedItemIds','archivedSourceIds'],['resumeItemIds','resumeSourceIds']].map(([field,sourceField])=>[field,checked.flatMap(batch=>mapIds(batch,sourceField))]))};
  }
  const view=value=>({libraryId:value.libraryId,revision:value.revision,analysisActive:value.analysisActive??false,reviewCheck:value.reviewCheck?{...value.reviewCheck,status:value.analysisActive?'waiting-for-safe-pause':value.reviewCheck.status}:null,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});

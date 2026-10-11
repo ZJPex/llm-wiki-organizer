@@ -68,7 +68,7 @@ export async function refreshReviewState(batch,{planning,detectTargets=true,exec
   }
  }
  const evolution=batch.flow.evolutionPlan;
- if(evolution&&changes.size){const members=new Set((evolution.fileMappings??[]).map(mapping=>key(path.join(batch.libraryPath,'raw/sources',mapping.from))));if([...changes.values()].some(change=>members.has(key(change.source.currentPath)))||catalogChanged){for(const source of pending)if(members.has(key(source.currentPath))||source.evolution)mark(source,'DIRECTORY_DEPENDENCY','目录调整成员或目录基线变化，完整目录依赖范围阻断',{classification:true});evolution.invalidated=true;reasons.push({code:'DIRECTORY_DEPENDENCY',scope:'directory',message:'目录演化不得只执行未变化的一部分，需重新检查完整调整',sourceIds:pending.filter(source=>members.has(key(source.currentPath))).map(source=>source.sourceId),nextAction:'directory'});}}
+ if(evolution&&(changes.size||catalogChanged)){const members=new Set((evolution.fileMappings??[]).map(mapping=>key(path.join(batch.libraryPath,'raw/sources',mapping.from))));if([...changes.values()].some(change=>members.has(key(change.source.currentPath)))||catalogChanged){for(const source of pending)if(members.has(key(source.currentPath))||source.evolution)mark(source,'DIRECTORY_DEPENDENCY','目录调整成员或目录基线变化，完整目录依赖范围阻断',{classification:true});evolution.invalidated=true;reasons.push({code:'DIRECTORY_DEPENDENCY',scope:'directory',message:'目录演化不得只执行未变化的一部分，需重新检查完整调整',sourceIds:pending.filter(source=>members.has(key(source.currentPath))).map(source=>source.sourceId),nextAction:'directory'});}}
  let sharedStale=false;
  if(changes.size||catalogChanged)sharedStale=staleValidation(batch,'来源、关联或分类目录变化，共享备份及验证证据需要重建');
  // 即使正文审核仍有效，库内无关变化也使整份备份证据失效；不把这个范围扩大为全文重分析。
