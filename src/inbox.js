@@ -10,6 +10,7 @@ import {validateName} from './planning.js';
 import {localReferences} from './links.js';
 import {selectedEvolution,sourceDirectoryDependency} from './directory-dependencies.js';
 import {assertNewCategoryBaseline,installNewCategory} from './new-categories.js';
+import {createClassificationRules} from './classification-rules.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
@@ -168,7 +169,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(source.ingestStatus==='historical')mappings.push({id:source.sourceId,from:`raw/sources/${current.rawIdentity}`,to:path.relative(batch.libraryPath,source.targetPath).replaceAll('\\','/')});
         else if(source.ingestStatus==='new') {
           if(key(source.currentPath)===key(source.targetPath)&&path.resolve(source.currentPath)!==path.resolve(source.targetPath))fail('CASE_ONLY_NEW_UNSUPPORTED','未摄取材料仅大小写改名需先人工处理，不能静默忽略');
-          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash,...(source.frozenPlan.rulesHash?{rulesHash:source.frozenPlan.rulesHash}:{})});
+          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash,...(source.frozenPlan.rulesHash?{rulesHash:source.frozenPlan.rulesHash,rulesStateDirectory:source.frozenPlan.rulesStateDirectory,classificationLibraryIdentity:source.frozenPlan.libraryIdentity}:{})});
         }
         else fail('UNKNOWN_ASSOCIATION','不能安全判断来源关联');
       }
@@ -198,7 +199,11 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(slice.historicalResult?.items?.some(item=>['failed','applied-unverified','not-run','pending','selected'].includes(item.status)))fail('HISTORY_REQUIRED','历史材料仍有未成功项目');
         if(slice.historicalRequest?.mappings?.some(mapping=>!slice.historicalResult?.items?.some(item=>item.from===mapping.from&&item.to===mapping.to&&item.status==='succeeded')))fail('HISTORY_REQUIRED','新增材料依赖的历史映射尚未全部成功，不能扩大安全子集');
         const watch=await watchSettings(batch);if(watch.hash!==slice.watchConfig.hash)fail('STALE_SETTINGS','首次摄取设置变化，请重新审核');
-        const checkRules=async()=>{const dependent=journal.items.filter(item=>item.status!=='succeeded'&&item.rulesHash);if(!dependent.length)return;if(!planning?.getClassificationRules)fail('RULES_REQUIRED','归档缺少分类规则版本核验');const latest=await planning.getClassificationRules(batch);if(dependent.some(item=>item.rulesHash!==latest.rulesHash))fail('STALE_RULES','分类偏好已变化，保留来源并重新检索审核');};
+        const checkRules=async()=>{for(const item of journal.items.filter(item=>item.status!=='succeeded'&&item.rulesHash)){
+          let latest;if(planning?.getClassificationRules)latest=await planning.getClassificationRules({...batch,classificationLibraryIdentity:item.classificationLibraryIdentity});
+          else{if(!item.rulesStateDirectory)fail('RULES_REQUIRED','归档缺少分类规则版本核验');const directory=await safePath(item.rulesStateDirectory);if(inside(batch.libraryPath,directory)||inside(batch.sourceRoot,directory))fail('UNSAFE_RULES','分类规则记录必须位于来源与知识库之外');latest=await createClassificationRules({stateDirectory:directory}).read({...batch,classificationLibraryIdentity:item.classificationLibraryIdentity});}
+          if(item.rulesHash!==latest.rulesHash)fail('STALE_RULES','分类偏好已变化，保留来源并重新检索审核');
+        }};
         await checkRules();
         const checkAssociations=async()=>{const found=await discoverSources({...batch,includeIdentities:journal.items.filter(item=>item.status!=='succeeded').map(item=>path.relative(sourceRoot,item.from).replaceAll('\\','/'))});if(found.flow.busy)fail('SOURCE_BUSY','知识库有待处理任务，归档暂停');for(const item of journal.items.filter(item=>item.status!=='succeeded'))assertSourceAssociation(item,found.sources.find(source=>key(source.currentPath)===key(item.from)));};
         await checkAssociations();

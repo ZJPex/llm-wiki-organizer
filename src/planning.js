@@ -253,7 +253,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
       if(input.saveClassificationRule===true){if(newCategory)throw Object.assign(new Error('请先归档落地新类别，再为实际已有类别保存后续规则'),{code:'INVALID_RULE_CATEGORY'});ruleSnapshot=await classificationRules.save({...input,category:input.category,expectedRulesHash:ruleSnapshot.rulesHash});}
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags,categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target,...(newCategory?{newCategory}:{}) };
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags,categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target,...(newCategory?{newCategory}:{}) };
       Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
@@ -270,7 +270,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if(entry.classification.rulesHash?entry.classification.rulesHash!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)throw Object.assign(new Error('分类偏好已变化，请重新检索并审核'),{code:'STALE_RULES'});
       const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target };
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target };
       entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
       entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
