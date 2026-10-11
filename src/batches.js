@@ -43,8 +43,21 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
   const configPath=input.configPath?await canonicalPath(input.configPath):null;
   const base={mode:input.mode,libraryPath,sourceRoot,wikiSourcePath,artifactRoot,configPath};
   const discovered=await strategies[input.mode].discover({input:base});
-  const batch=await store.create({...base,sources:discovered.sources.map(source=>({...source,sourceId:randomUUID(),currentIdentity:source.currentIdentity??source.identity,selected:false})),flow:discovered.flow??{},slices:[],phase:'analysis',events:[]});return view(batch);
+  if(input.includeIdentities!==undefined){
+   if(!Array.isArray(input.includeIdentities)||!input.includeIdentities.length||input.includeIdentities.some(identity=>typeof identity!=='string'||!discovered.sources.some(source=>source.identity===identity)))batchFail('INVALID_SELECTION','所选材料不在当前来源中');
+   discovered.sources=discovered.sources.filter(source=>input.includeIdentities.includes(source.identity));
+  }
+  const sources=await Promise.all(discovered.sources.map(async source=>{const stat=await lstat(source.currentPath,{bigint:true});return {...source,sourceId:randomUUID(),fileIdentity:JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]),currentIdentity:source.currentIdentity??source.identity,selected:false};}));
+  const batch=await store.create({...base,sources,flow:discovered.flow??{},slices:[],phase:'analysis',events:[]});return view(batch);
  }
+ async function rebindSource(input){return operate(input,'review-running',async batch=>{
+  const source=batch.sources.find(source=>source.sourceId===input.sourceId);if(!source)batchFail('INVALID_SOURCE','文件整理项不存在');
+  const found=(await discoverSources(batch)).sources.find(source=>source.currentPath===input.currentPath);if(!found||found.hash!==source.hash)batchFail('STALE_SOURCE','改名后的源正文已变化');
+  const stat=await lstat(found.currentPath,{bigint:true}),identity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);
+  if(source.fileIdentity!==identity)batchFail('STALE_SOURCE','无法证明改名后仍为同一份源文件');
+  await planning.commitIdentityMappings?.({sourceRoot:batch.sourceRoot,targetRoot:batch.sourceRoot,libraryPath:batch.libraryPath,executionId:'scan-'+randomUUID(),mappings:[{from:source.currentPath,to:found.currentPath,hash:source.hash}]});
+  Object.assign(source,found,{status:source.analysis?'analyzed':'pending',selected:false,currentIdentity:found.identity});delete source.classification;delete source.frozenPlan;delete source.targetPath;invalidateSlices(batch);
+ });}
  async function analyzeNext(input){return operate(input,'analysis-running',async(batch,save)=>{const limit=Math.max(1,Math.min(5,Number(input.limit)||1));let count=0;for(const source of batch.sources){if(count>=limit)break;if(input.sourceId&&source.sourceId!==input.sourceId)continue;if(!['pending','analysis-failed','needs-analysis'].includes(source.status)&&!(source.status==='blocked'&&!source.analysis)&&!(input.retryUncertain===true&&source.status==='needs-information'))continue;try{
  const startedAt=new Date().toISOString();
  let progressWrites=Promise.resolve();const onProgress=progress=>{const next=progressWrites.then(async()=>{batch.flow.analysisCurrent={sourceId:source.sourceId,identity:source.currentIdentity,startedAt,status:'running',...progress};await save();});progressWrites=next.catch(()=>{});return next;};
@@ -134,5 +147,5 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
  const confirmNewArchive=createNewArchiveWorkflow({store,view,operate,strategy,planning,fresh,reconcile});
  const history=createHistoryWorkflow({store,view,fresh,strategy,planning,backup,migration,recovery,checkIdle:batch=>{assertAnalysisAccess(batch,{});if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库正在处理另一操作');}});
  const application=createHistoryApplication({store,view,fresh,original,strategy,reconcile,checkIdle:batch=>{assertAnalysisAccess(batch,{});assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有任务正在执行');}});
- return {modelConcurrency:planning.modelConcurrency,...history,...jobs,confirmNewArchive,refreshReview,create,getReport:async input=>{const {batch,answer,error,application:observedApplication}=await application.readSnapshot(input);const report=buildBatchReport(await readArchiveReportEvidence(batch),{...input,isActive:answer.report.status==='running',observedApplication});if(error){report.status='needs-recovery';report.error={code:error.code??'EVIDENCE_READ_FAILED',message:error.message};}return report;},applyHistoryPlan:application.applyHistoryPlan,queryHistoryApplication:application.get,get:application.get,list:input=>store.list(input,record=>view(record,{limit:1})),analyzeNext,classifyNext,confirmRecommendedCategories,confirmPlans,reviewItem,treeAction,prepareSlice,replanSlice,validateSlice,cancelSlice,prepareOriginal,applySlice};
+ return {modelConcurrency:planning.modelConcurrency,...history,...jobs,confirmNewArchive,refreshReview,create,rebindSource,getReport:async input=>{const {batch,answer,error,application:observedApplication}=await application.readSnapshot(input);const report=buildBatchReport(await readArchiveReportEvidence(batch),{...input,isActive:answer.report.status==='running',observedApplication});if(error){report.status='needs-recovery';report.error={code:error.code??'EVIDENCE_READ_FAILED',message:error.message};}return report;},applyHistoryPlan:application.applyHistoryPlan,queryHistoryApplication:application.get,get:application.get,list:input=>store.list(input,record=>view(record,{limit:1})),analyzeNext,classifyNext,confirmRecommendedCategories,confirmPlans,reviewItem,treeAction,prepareSlice,replanSlice,validateSlice,cancelSlice,prepareOriginal,applySlice};
 }
