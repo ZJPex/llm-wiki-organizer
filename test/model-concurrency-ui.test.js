@@ -18,3 +18,11 @@ test('并发审核列表显示每份正在分析材料的独立阶段与完成�
   assert.match(host.textContent,/甲.md.*2\/8/);assert.match(host.textContent,/乙.md.*选择分类/);
  }finally{globalThis.document=previous;}
 });
+test('恢复进度展示已复用段、该次分析在途数及中断未知计量',()=>{
+ const document=createInboxDocument(),previous=globalThis.document;globalThis.document=document;
+ try{const host=document.querySelector('#progress'),controls=modelConcurrencyControls(host);
+ controls.update({modelConcurrency:{limit:3,active:3},analysisJob:{status:'pausing',inFlight:2},flow:{analysisCurrent:{identity:'长文.md',stage:'segment',completed:4,totalSteps:9,reusedSteps:3,status:'running'}}});
+ assert.match(host.textContent,/当前分析在途 2/);assert.match(host.textContent,/复用 3/);
+ controls.update({modelConcurrency:{limit:3,active:0},analysisJob:{status:'interrupted',inFlight:null},flow:{}});assert.match(host.textContent,/中断.*未知/);
+ }finally{globalThis.document=previous;}
+});
