@@ -34,7 +34,6 @@ export function createClassificationRules({stateDirectory}){
     const current=await snapshot(input);
     if(input.expectedRulesHash!==current.rulesHash)fail('STALE_RULES','分类偏好已变化，请重新审核');
     const ruleId=planDigest({instruction,category:input.category}),rules=current.rules.some(rule=>rule.ruleId===ruleId)?current.rules:[...current.rules,{ruleId,instruction,category:input.category}];
-    if(rules.length>40)fail('RULE_LIMIT','知识库分类规则已达40条，请先整理现有偏好');
     const saved={schemaVersion:1,root:current.root,libraryIdentity:current.libraryIdentity,rules};saved.recordHash=planDigest(saved);
     await mkdir(stateDirectory,{recursive:true});const temporary=`${current.file}.${randomUUID()}.tmp`;await writeFile(temporary,JSON.stringify(saved,null,2),{flag:'wx'});await atomicRename(temporary,current.file);
     return {...current,rules,rulesHash:planDigest({libraryIdentity:current.libraryIdentity,rules})};

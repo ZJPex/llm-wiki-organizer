@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {createLibraryInboxHome} from '../public/library-inbox.js';
 
+test('后台刷新独立更新另一材料进度，保留当前输入节点、焦点、光标与勾选',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);
+ let completed=1;const items=[{itemId:'a',identity:'a.md',hash:'a',reviewVersion:0,status:'reviewable',available:true,suggestion:'建议.md',classification:{category:'',options:['']},analysis:{summary:'正文摘要'}},{itemId:'b',identity:'b.md',status:'analyzing',available:true,stage:'segment',progress:{completed:1,totalSteps:8}}];
+ t.mock.method(globalThis,'fetch',async url=>url==='/api/session'?{ok:true,json:async()=>({token:'test'})}:{ok:true,json:async()=>structuredClone({libraryId:'library',items:[items[0],{...items[1],progress:{completed,totalSteps:8}}],analysisProgress:{completed:1,total:2},analysisActive:true})});
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();
+ const selected=tasks.querySelector('article').querySelector('input');selected.checked=true;await selected.dispatchEvent({type:'change'});
+ const name=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 a.md');name.value='手动草稿.md';await name.dispatchEvent({type:'input'});name.focus();name.selectionStart=2;name.selectionEnd=4;
+ completed=3;await home.load();
+ assert.ok(tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 a.md')===name,'保留输入节点');assert.ok(document.activeElement===name,'保留焦点');assert.equal(name.selectionStart,2);assert.equal(name.selectionEnd,4);assert.equal(name.value,'手动草稿.md');assert.equal(tasks.querySelector('article').querySelector('input').checked,true);assert.match(tasks.textContent,/3\/8/);
+ items[0].status='confirmed';await home.load();assert.equal(tasks.querySelectorAll('button').find(node=>node.textContent==='确认归档所选文件').disabled,true);
+ items[0].status='pending';items[0].hash='changed';items[0].reviewVersion=1;await home.load();assert.ok(tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 a.md')===name);assert.equal(name.value,'手动草稿.md');assert.equal(name.disabled,false);assert.equal(tasks.querySelector('article').querySelector('input').checked,false);assert.match(tasks.textContent,/旧选择已撤销.*草稿.*重新审核/);
+});
+
 test('文件失败说明影响范围并提供手动重试，退避中的文件呈现有限尝试',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let starts=0;
@@ -22,8 +36,8 @@ test('收件箱页面明确勾选后启动，保存建议和人工编辑，再�
   const input=JSON.parse(options?.body??'{}');calls.push({url,input});
   if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};
   if(url==='/api/inbox/scan')items=[{...source},{...source,itemId:'source-b',identity:'b.md'}];
-  if(url==='/api/inbox/start'){assert.deepEqual(input.itemIds,['source-a']);items[0]={...items[0],status:'reviewable',suggestion:'建议名称.md',analysis:{summary:'已读取的全文摘要'},classification:{category:'',options:['','001 缓存'],reason:'正文主题'},targetPath:'/raw/建议名称.md'};}
-  if(url==='/api/inbox/review'){assert.equal(input.name,'人工名称.md');assert.equal(input.category,'001 缓存');assert.deepEqual(input.tags,['数据库','可靠性']);items[0]={...items[0],tags:input.tags,status:'confirmed',suggestion:input.name,classification:{...items[0].classification,category:input.category},targetPath:'/raw/001 缓存/人工名称.md'};}
+  if(url==='/api/inbox/start'){assert.deepEqual(input.itemIds,['source-a']);items[0]={...items[0],reviewVersion:0,reviewBasis:{sourceHash:'a',reviewVersion:0},status:'reviewable',suggestion:'建议名称.md',analysis:{summary:'已读取的全文摘要'},classification:{category:'',options:['','001 缓存'],reason:'正文主题'},targetPath:'/raw/建议名称.md'};}
+  if(url==='/api/inbox/review'){assert.equal(input.name,'人工名称.md');assert.equal(input.category,'001 缓存');assert.deepEqual(input.tags,['数据库','可靠性']);assert.deepEqual(input.reviewBasis,items[0].reviewBasis);items[0]={...items[0],reviewVersion:1,reviewBasis:{sourceHash:'a',reviewVersion:1},tags:input.tags,status:'confirmed',suggestion:input.name,classification:{...items[0].classification,category:input.category},targetPath:'/raw/001 缓存/人工名称.md'};}
   if(url==='/api/inbox/archive'){assert.equal(input.writersPaused,true);assert.equal(input.approved,true);items[0]={...items[0],status:'archived'};}
   return {ok:true,json:async()=>structuredClone({libraryId:'library',items})};
  });
@@ -37,7 +51,7 @@ test('收件箱页面明确勾选后启动，保存建议和人工编辑，再�
  const category=tasks.querySelector('article').querySelector('select');category.value='001 缓存';await category.dispatchEvent({type:'change'});
  const tags=tasks.querySelector('article').querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='主题标签 a.md');tags.value='数据库、可靠性';await tags.dispatchEvent({type:'input'});
  await home.load();assert.equal(tasks.querySelector('article').querySelectorAll('input').find(node=>node.type!=='checkbox').value,'人工名称.md');
- await button('保存所选审核').click();assert.match(tasks.textContent,/已确认待归档/);assert.equal(calls.some(call=>call.url==='/api/inbox/archive'),false);
+ await button('保存所选审核').click();assert.match(tasks.textContent,/已确认待归档/);assert.equal(calls.some(call=>call.url==='/api/inbox/archive'),false);assert.equal(tasks.querySelector('article').querySelector('input').checked,true);
  const paused=tasks.querySelector('#inbox-writers-paused');paused.checked=true;await paused.dispatchEvent({type:'change'});
  await button('确认归档所选文件').click();assert.match(tasks.textContent,/已归档/);assert.match(tasks.textContent,/001 缓存\/人工名称.md/);assert.match(tasks.textContent,/主题标签：数据库、可靠性/);
  await home.load();assert.match(tasks.textContent,/已归档/);assert.equal(items[1].status,'pending');
@@ -68,10 +82,10 @@ test('待定方案呈现候选与理由，根分类须明确选择，不能把�
 test('当前文件审核默认不推广，明确勾选和填写规则后才提交知识库偏好，刷新保留草稿',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);const reviews=[];
- const item={itemId:'rule',identity:'偏好.md',status:'reviewable',available:true,suggestion:'偏好.md',reviewBasis:{sourceHash:'source',catalogHash:'catalog'},classification:{category:'001 缓存',options:['','001 缓存','002 数据库']}};
+ const item={itemId:'rule',identity:'偏好.md',status:'reviewable',available:true,suggestion:'偏好.md',reviewBasis:{sourceHash:'source',catalogHash:'catalog',rulesHash:'rules-v1'},classification:{category:'001 缓存',options:['','001 缓存','002 数据库']}};
  t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};if(url==='/api/inbox/review')reviews.push(JSON.parse(options.body));return {ok:true,json:async()=>({libraryId:'library',items:[item]})};});
  const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();assert.match(tasks.textContent,/默认只修改当前文件/);assert.match(tasks.textContent,/仍需逐文件审核/);
  const checkbox=tasks.querySelector('article').querySelector('input');checkbox.checked=true;await checkbox.dispatchEvent({type:'change'});const saveButton=()=>tasks.querySelectorAll('button').find(node=>node.textContent==='保存所选审核');await saveButton().click();assert.notEqual(reviews[0].saveClassificationRule,true);
- const selected=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='保存后续分类规则 偏好.md');assert.equal(selected.checked,false);selected.checked=true;await selected.dispatchEvent({type:'change'});const instruction=tasks.querySelector('textarea');assert.equal(instruction.disabled,false);instruction.value='缓存一致性优先归属数据库';await instruction.dispatchEvent({type:'input'});await home.load();assert.equal(tasks.querySelector('textarea').value,'缓存一致性优先归属数据库');
- await saveButton().click();assert.equal(reviews[1].saveClassificationRule,true);assert.equal(reviews[1].ruleText,'缓存一致性优先归属数据库');
+ const selected=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='保存后续分类规则 偏好.md');assert.equal(selected.checked,false);selected.checked=true;await selected.dispatchEvent({type:'change'});const instruction=tasks.querySelector('textarea');assert.equal(instruction.disabled,false);instruction.value='缓存一致性优先归属数据库';await instruction.dispatchEvent({type:'input'});document.activeElement=instruction;instruction.selectionStart=5;await home.load();assert.equal(tasks.querySelector('textarea'),instruction);assert.equal(document.activeElement,instruction);assert.equal(instruction.selectionStart,5);assert.equal(instruction.value,'缓存一致性优先归属数据库');const category=tasks.querySelector('select');category.value='002 数据库';await category.dispatchEvent({type:'change'});
+ await saveButton().click();assert.equal(reviews[1].saveClassificationRule,true);assert.equal(reviews[1].ruleText,'缓存一致性优先归属数据库');assert.equal(reviews[1].category,'002 数据库');assert.deepEqual(reviews[1].reviewBasis,item.reviewBasis);
 });

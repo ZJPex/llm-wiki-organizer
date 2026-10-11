@@ -43,7 +43,7 @@ async function next(f,name){await writeFile(path.join(f.sourceRoot,name+'.md'),`
 const review=(f,item,extra={})=>f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:item.identity,category:'002 数据库',...extra});
 
 test('默认修改只作用当前文件，显式规则参与后续检索选择且重启保留，建议仍须逐文件审核',async t=>{
- const f=await fixture(t),first=f.ready.items[0];await review(f,first);assert.deepEqual((await f.read()).classificationRules,[]);
+ const f=await fixture(t),first=f.ready.items[0];assert.match(first.reviewBasis.rulesHash,/^[a-f0-9]{64}$/);await assert.rejects(review(f,first,{reviewBasis:{...first.reviewBasis,rulesHash:'过期规则'}}),{code:'STALE_REVIEW'});await review(f,first);assert.deepEqual((await f.read()).classificationRules,[]);
  const ordinary=await next(f,'第二份');assert.equal(ordinary.classification.category,'001 缓存');
  await review(f,ordinary,{saveClassificationRule:true,ruleText:'缓存一致性材料优先归属数据库类别'});const rules=(await f.read()).classificationRules;assert.equal(rules.length,1);assert.equal(rules[0].instruction,'缓存一致性材料优先归属数据库类别');assert.equal(rules[0].category,'002 数据库');
  const third=await next(f,'第三份');assert.equal(third.classification.category,'002 数据库');assert.equal(third.status,'reviewable');assert.ok(f.calls.filter(call=>['category-search','category-choice'].includes(call.stage)).some(call=>call.classificationRules?.length===1));
@@ -63,8 +63,8 @@ test('同一服务两份真实知识库隔离偏好，相同路径替换项目�
 
 test('规则变化使未执行旧分类需要复核但复用正文，失效类别不传给模型，证据不足仍待定',async t=>{
  let insufficient=false;const f=await fixture(t,{files:['初稿','留待处理'],choose:request=>({category:request.classificationRules?.at(-1)?.category??'001 缓存',reason:'主要用途与偏好相符',evidence:insufficient?[]:request.content.evidence,uncertain:insufficient})}),first=f.ready.items.find(item=>item.identity==='初稿.md'),retained=f.ready.items.find(item=>item.identity==='留待处理.md');
- await review(f,retained);const analysisCalls=f.calls.filter(call=>['segment','synthesis'].includes(call.stage)).length;
- await review(f,first,{saveClassificationRule:true,ruleText:'缓存一致性优先放数据库'});await assert.rejects(review(f,retained));
+ await review(f,retained);const reviewedRetained=(await f.read()).items.find(item=>item.itemId===retained.itemId);const analysisCalls=f.calls.filter(call=>['segment','synthesis'].includes(call.stage)).length;
+ await review(f,first,{saveClassificationRule:true,ruleText:'缓存一致性优先放数据库'});await assert.rejects(review(f,reviewedRetained),{code:'STALE_REVIEW'});
  await f.request('inbox/start',{id:f.id,itemIds:[retained.itemId]});const reconsidered=await waitFor(f,'留待处理');assert.equal(reconsidered.classification.category,'002 数据库');assert.equal(f.calls.filter(call=>['segment','synthesis'].includes(call.stage)).length,analysisCalls);assert.equal(reconsidered.status,'reviewable');
  insufficient=true;const unproven=await next(f,'引用不足');assert.equal(unproven.classification.category,null);assert.equal(unproven.classification.decision,'insufficient-evidence');assert.notEqual(unproven.status,'confirmed');
  await rename(path.join(f.libraryPath,'raw/sources/002 数据库'),path.join(f.libraryPath,'raw/sources/002 新库名'));insufficient=false;const unavailable=await next(f,'目录变化后');assert.equal(unavailable.classification.category,'001 缓存');const latestChoice=f.calls.filter(call=>call.stage==='category-choice').at(-1);assert.deepEqual(latestChoice.classificationRules,[]);
