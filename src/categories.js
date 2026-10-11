@@ -12,15 +12,16 @@ export async function categoryCatalog(root) {
   const categories = [];
   async function walk(relative) {
     const directory = path.join(canonical, relative);
-    let description = '', aliases = [];
+    let description = '', aliases = [],organizerProposalHash;
     try {
       const metadataPath = path.join(directory, '.category.json');
       if ((await lstat(metadataPath)).isSymbolicLink()) throw new Error('分类说明不能是链接');
       const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
       if (typeof metadata.description !== 'string' || !Array.isArray(metadata.aliases ?? []) || (metadata.aliases ?? []).some(x => typeof x !== 'string')) throw new Error('分类说明格式无效');
       description = metadata.description; aliases = metadata.aliases ?? [];
+      organizerProposalHash=metadata.organizerProposalHash;
     } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    categories.push({ path: relative, description, aliases });
+    categories.push({ path: relative, description, aliases,...(organizerProposalHash!==undefined?{organizerProposalHash}:{}) });
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.isSymbolicLink()) throw new Error('分类树含链接，拒绝规划');

@@ -6,6 +6,14 @@ import {atomicRename} from './atomic-rename.js';
 const queues=new Map();
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 
+// 接受提议只允许保存偏好；实际目录与提议证明一致后才进入后续模型请求。
+export function classificationRuleState(rule,catalog){
+ const category=catalog.categories.find(category=>category.path===rule.category);
+ if(!category)return rule.newCategoryHash?'waiting-category':'category-unavailable';
+ if(rule.newCategoryHash&&category.organizerProposalHash!==rule.newCategoryHash)return 'category-mismatch';
+ return 'active';
+}
+
 // 规则属于实际知识库身份；相同路径被新项目替换后不会继承旧偏好。
 export async function classificationLibraryIdentity(libraryPath){
  const root=await realpath(libraryPath);let project;
@@ -33,7 +41,7 @@ export function createClassificationRules({stateDirectory}){
    const pending=previous.catch(()=>{}).then(async()=>{
     const current=await snapshot(input);
     if(input.expectedRulesHash!==current.rulesHash)fail('STALE_RULES','分类偏好已变化，请重新审核');
-    const ruleId=planDigest({instruction,category:input.category}),rules=current.rules.some(rule=>rule.ruleId===ruleId)?current.rules:[...current.rules,{ruleId,instruction,category:input.category}];
+    const preference={instruction,category:input.category,...(input.newCategoryHash?{newCategoryHash:input.newCategoryHash}:{})},ruleId=planDigest(preference),rules=current.rules.some(rule=>rule.ruleId===ruleId)?current.rules:[...current.rules,{ruleId,...preference}];
     const saved={schemaVersion:1,root:current.root,libraryIdentity:current.libraryIdentity,rules};saved.recordHash=planDigest(saved);
     await mkdir(stateDirectory,{recursive:true});const temporary=`${current.file}.${randomUUID()}.tmp`;await writeFile(temporary,JSON.stringify(saved,null,2),{flag:'wx'});await atomicRename(temporary,current.file);
     return {...current,rules,rulesHash:planDigest({libraryIdentity:current.libraryIdentity,rules})};
