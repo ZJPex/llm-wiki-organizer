@@ -35,6 +35,12 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   return groups;
  }
  const save=saved=>store.update(saved.batchId,saved.revision,()=>saved);
+ async function connectLegacy(library,saved,item){
+  if(item.batchId||item.status==='archived')return;
+  const candidates=await batches.legacyResults(library,item);item.history=candidates;
+  const valid=candidates.filter(value=>value.valid);
+  if(valid.length===1){const adopted=await batches.adoptLegacy(library,item,valid[0].originId);Object.assign(item,{batchId:adopted.batchId,sourceId:adopted.sourceId,legacyOrigin:valid[0].originId,invalidatedReason:valid[0].reason});await sync(saved);}
+ }
  const view=value=>({libraryId:value.libraryId,revision:value.revision,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
@@ -49,7 +55,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
     if(item.hash&&item.hash!==source.hash){item.history.push({hash:item.hash,identity:item.identity,batchId:item.batchId,sourceId:item.sourceId});for(const field of ['batchId','sourceId','analysis','classification','suggestion','targetPath','manuallyEdited','stage','tags','kind'])delete item[field];item.status='pending';item.invalidatedReason='源正文已变化，请重新处理';}
     else if(item.batchId&&item.currentPath!==source.currentPath){const batch=await snapshot(item.batchId);await batches.rebindSource({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,currentPath:source.currentPath});delete item.classification;delete item.targetPath;item.status='needs-classification';item.invalidatedReason='来源位置已变化，请复核分类与归档位置';}
     if(item.status==='missing'&&!item.batchId)item.status='pending';
-    Object.assign(item,{identity:source.identity,currentPath:source.currentPath,hash:source.hash,ingestStatus:source.ingestStatus,available:true});seen.add(item.itemId);
+    Object.assign(item,{identity:source.identity,currentPath:source.currentPath,hash:source.hash,ingestStatus:source.ingestStatus,available:true});seen.add(item.itemId);await connectLegacy(library,saved,item);
    }
    for(const item of saved.items)if(!seen.has(item.itemId)&&item.status!=='archived'){item.available=false;item.status='missing';}
    return view(await save(saved));

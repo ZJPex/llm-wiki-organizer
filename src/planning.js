@@ -73,6 +73,15 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,
+    // 旧任务正文经服务端核验后接入；原执行记录与检查点不被覆盖。
+    adoptLegacyAnalysis: input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),file=await sourceFile(input.sourceRoot,input.identity),source=input.entry;
+      if(source.hash!==hash(await readFile(file))||!sameAnalysisVersion(source.analysisVersion,analysisVersion(await readModelConfig(input))))throw new Error('旧正文基线已变化');
+      const catalog=await categoryCatalog(path.join(input.libraryPath,'raw/sources'));
+      const classification=input.classificationValid?structuredClone(source.classification):{category:null,status:'needs-review',decision:'undetermined',tags:[],reason:'旧审核依据需要重新确认',considered:[],options:catalog.categories.map(value=>value.path),catalogRoot:catalog.root,catalogHash:catalog.hash};
+      const entry={identity:input.identity,hash:source.hash,kind:source.kind,analysisVersion:source.analysisVersion,segments:source.segments,analysis:source.analysis,suggestion:source.confirmedName??source.suggestion,classification,tags:source.tags??[],reviewRequired:true};
+      saved.data.entries[input.identity]=entry;await persist(saved.file,saved.data);return entry;
+    }),
     resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
