@@ -26,9 +26,9 @@ test('共享原库基线变化撤销验证并拒绝旧授权，保留逐份审�
  await f.call('applyHistoryPlan',{planHash:old.historyPlan.planHash,evidenceDigest:old.historyValidation.evidenceDigest,writersPaused:true,approved:true},400);await f.call('get');
  await f.call('continueHistoryValidation',{planHash:f.getBatch().historyPlan.planHash,writersPaused:true});b=await f.wait();assert.equal(b.historyValidation.status,'awaiting-apply',JSON.stringify(b.historyValidation));assert.equal(b.historyValidation.attemptCount,2);
 });
-test('分类目录变化保留全部正文分析并停止复用旧分类，重复检查不重复失效',async t=>{
+test('无关分类新增经依赖证明保留人工目标和全部正文，重复检查不重复失效',async t=>{
  const f=await historyFixture(t),before=f.getBatch();await mkdir(path.join(f.libraryPath,'raw/sources/002 网络'));
- let b=await f.call('refreshReview');assert.equal(b.counts.reviewed??0,0);assert.equal(b.sources.filter(s=>s.analysis).length,3);assert.ok(b.sources.every(s=>!s.classification));
+ let b=await f.call('refreshReview');assert.equal(b.counts.reviewed,3);assert.equal(b.sources.filter(s=>s.analysis).length,3);assert.ok(b.sources.every(s=>s.classification&&s.selected));assert.equal(b.invalidations.retainedClassificationSourceIds.length,3);
  assert.deepEqual(b.sources.map(s=>s.analysis),before.sources.map(s=>s.analysis));const versions=b.sources.map(s=>s.reviewVersion);b=await f.call('refreshReview');assert.deepEqual(b.sources.map(s=>s.reviewVersion),versions);
 });
 test('同正文新审核版本撤销旧选择且保留手动名称',()=>{

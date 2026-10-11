@@ -11,7 +11,7 @@ const control=(label,action,primary=false)=>{const button=element('button',label
 
 // 草稿与勾选独立于后台快照，轮询不覆盖用户尚未保存的修改。
 export function createLibraryInboxHome({tasks,featured,more,getLibrary,history}){
- let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,writersPaused=false,analysisProgress=null,analysisActive=false;
+ let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,writersPaused=false,analysisProgress=null,analysisActive=false,reviewCheck=null;
  const cards=new Map(),toolbarHost=element('div'),listHost=element('div'),empty=element('p','收件箱还没有材料。点击“刷新发现文件”执行一次扫描，再勾选需要整理的文件。');
  const message=element('p');message.setAttribute('role','status');
  async function run(action){if(busy)return;busy=true;const version=generation;message.textContent='正在处理…';try{await action();if(version===generation)message.textContent='操作已保存';}catch(error){if(version===generation)message.textContent=error.message;}finally{if(version===generation){busy=false;render();}}}
@@ -21,7 +21,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   const version=generation,result=await requestInbox(action,{id:library.id});if(version!==generation||getLibrary()?.id!==library.id)return;
   libraryId=library.id;
   for(const item of result.items){const before=items.find(value=>value.itemId===item.itemId);if(before&&(before.hash!==item.hash||(before.reviewBasis&&JSON.stringify(before.reviewBasis)!==JSON.stringify(item.reviewBasis))||(before.reviewVersion??0)!==(item.reviewVersion??0))){selected.delete(item.itemId);const draft=drafts.get(item.itemId);if(draft)draft.invalidated=true;}}
-  items=result.items;analysisProgress=result.analysisProgress;analysisActive=result.analysisActive??items.some(item=>['analyzing','waiting'].includes(item.status));render();
+  items=result.items;analysisProgress=result.analysisProgress;analysisActive=result.analysisActive??items.some(item=>['analyzing','waiting'].includes(item.status));reviewCheck=result.reviewCheck;render();
  }
  function clear(text='正在加载收件箱…'){generation++;busy=false;items=[];selected=new Set();drafts=new Map();cards.clear();listHost.replaceChildren();libraryId=null;tasks.replaceChildren(element('p',text));featured.replaceChildren();more.hidden=true;}
  function render(){
@@ -30,6 +30,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   const counts=items.reduce((value,item)=>(value[item.status]=(value[item.status]??0)+1,value),{});
   featured.className='home-guidance';featured.append(element('p',`${items.filter(item=>item.status!=='archived').length} 份未归档 · 可审核 ${counts.reviewable??0} · 分类待定 ${counts['needs-classification']??0} · 已确认 ${counts.confirmed??0} · 失败 ${counts.failed??0}`));
   if(analysisProgress)featured.append(element('p',`分析处理完成 ${analysisProgress.completed} / ${analysisProgress.total} · 信息不足 ${counts['needs-information']??0} · 已归档 ${counts.archived??0}`));
+  if(reviewCheck)featured.append(element('p',reviewCheck.status==='blocked'?'归档后复核已阻断：'+reviewCheck.reason.message:'基线复核：待重新分析 '+(reviewCheck.analysisNeededItemIds?.length??0)+' · 待重新分类或重审 '+(reviewCheck.classificationNeededItemIds?.length??0)+' · 仍有效审核 '+(reviewCheck.reviewedItemIds?.length??0)+' · 已归档 '+(reviewCheck.archivedItemIds?.length??0)));
   const toolbar=element('div');toolbar.className='review-toolbar';
   const analyze=control('开始整理所选文件',()=>run(async()=>{await requestInbox('start',{id:libraryId,itemIds:chosen().map(item=>item.itemId)});await load();}),true);
   const review=control('保存所选审核',()=>run(async()=>{for(const item of chosen()){if(!['reviewable','needs-classification','confirmed'].includes(item.status))continue;const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[],reviewBasis:item.reviewBasis,acceptNewCategory:item.classification?.newCategoryAccepted===true,newCategoryHash:item.classification?.newCategory?.proposalHash};if(draft.category===null)throw new Error('请明确选择主分类');const result=await requestInbox('review',{id:libraryId,itemId:item.itemId,...draft,manuallyEdited:drafts.has(item.itemId)}),saved=result.items.find(value=>value.itemId===item.itemId);if(saved)items=items.map(value=>value.itemId===item.itemId?saved:value);drafts.delete(item.itemId);}await load();}));

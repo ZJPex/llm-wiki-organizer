@@ -13,6 +13,7 @@ import {themeTags} from './classification-result.js';
 import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 import {compileNewCategory,checkedNewCategory} from './new-categories.js';
+import {classificationDependency,revalidatedClassification} from './classification-dependencies.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -74,6 +75,12 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   return {
     modelConcurrency,
     resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
+    revalidateClassification:input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];
+      if(!entry?.classification||entry.hash!==hash(await readFile(await sourceFile(input.sourceRoot,input.identity),'utf8')))return null;
+      const catalog=await categoryCatalog(input.categoryRoot),patch=revalidatedClassification(entry.classification,entry.frozenPlan,catalog);
+      if(!patch)return null;Object.assign(entry,patch);await persist(saved.file,saved.data);return patch;
+    }),
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -225,7 +232,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
           if(compiled.newCategory){latest.data.newCategories[compiled.newCategory.proposalId]=compiled.newCategory;recommendation.category=compiled.newCategory.path;}
           else if(typeof compiled.category==='string')recommendation.decision='existing';
         }
-        current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.classification={...recommendation,dependency:classificationDependency(catalog,recommendation,{fullCatalog:!!newCategoryResult}),catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
         current.tags=themeTags(recommendation.tags);
         delete current.frozenPlan;await persist(latest.file,latest.data);return current;
       });
@@ -250,7 +257,8 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
       const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target,...(newCategory?{newCategory}:{}) };
-      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category,newCategory},{selected:true});frozen.classificationDependency=dependency;
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,dependency,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -265,8 +273,9 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category},{selected:true});frozen.classificationDependency=dependency;
       entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
-      entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
+      entry.classification = { ...entry.classification,dependency, category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
       return entry;
     }),

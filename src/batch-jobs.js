@@ -69,5 +69,9 @@ export function createBatchJobs({store,view,step,classify,processSource,proposeT
   if(job?.status==='running')job.status='pausing';
   return view(batch);
  }
- return {startAnalysis,continueAnalysis:startAnalysis,pauseAnalysis};
+ async function continueAnalysis(input){
+  const batch=await store.get(input.batchId),sourceIds=input.sourceIds===undefined?batch.flow.analysisJob?.sourceIds:input.sourceIds;
+  return startAnalysis({...input,...(sourceIds?{sourceIds}:{})});
+ }
+ return {startAnalysis,continueAnalysis,pauseAnalysis};
 }
