@@ -1,0 +1,24 @@
+async function setLimit(limit){
+ const {token}=await(await fetch('/api/session')).json();
+ const response=await fetch('/api/model-concurrency/set',{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify({limit})});
+ const answer=await response.json();if(!response.ok)throw new Error(answer.error);return answer;
+}
+export function modelConcurrencyControls(host,{request=setLimit}={}){
+ const failure=document.createElement('p'),recovery=document.createElement('p'),progress=document.createElement('p'),occupancy=document.createElement('p'),label=document.createElement('label'),input=document.createElement('input'),save=document.createElement('button'),error=document.createElement('p');
+ progress.setAttribute('role','status');occupancy.setAttribute('role','status');error.setAttribute('role','alert');
+ input.type='number';input.setAttribute('min','1');input.setAttribute('step','1');input.setAttribute('aria-label','服务最大模型并发数');
+ label.textContent='最大模型并发数';label.append(input);save.type='button';save.textContent='保存并发设置';recovery.setAttribute('role','status');failure.setAttribute('role','status');host.append(progress,occupancy,recovery,failure,label,save,error);
+ let dirty=false;input.oninput=()=>{dirty=true;};
+ const display=value=>{if(!value)return;occupancy.textContent=`模型调用占用 ${value.active}/${value.limit}${value.converging?' · 正在收敛，等待在途完成':''}${value.rateLimited?' · 模型限流，已降低派发压力':''}；CLI 按整理器调用计数。`;if(!dirty&&document.activeElement!==input)input.value=String(value.limit);};
+ save.onclick=async()=>{save.disabled=true;error.textContent='';try{const value=Number(input.value);if(!Number.isSafeInteger(value)||value<1)throw new Error('请输入合法正整数');const result=await request(value);dirty=false;display(result);}catch(e){error.textContent=e.message;}finally{save.disabled=false;}};
+ return {update(batch){
+  display(batch.modelConcurrency);recovery.textContent=batch.analysisJob?.status==='interrupted'?'服务中断，请手动继续；中断期间在途计量未知':Number.isInteger(batch.analysisJob?.inFlight)?'当前分析在途 '+batch.analysisJob.inFlight:'';
+  if(batch.analysisJob?.status==='failed')recovery.textContent+='；本次分析已结束，存在失败项；修复原因后手动继续，仅补齐未完成工作。';
+  if(batch.analysisJob?.status==='partial')recovery.textContent+='；本次所选文件已处理结束，其他未完成文件等待手动继续。';
+  failure.textContent=(batch.sources??[]).filter(source=>source.failure).map(source=>`${source.identity} · ${source.failure.scope==='model'?'同模型配置':'本篇文章'} · ${source.failure.message} · 已尝试 ${source.failure.attempts} 次`).join('；');
+  const current=batch.flow?.analysisCurrent,classification=batch.flow?.classificationCurrent;
+  let items=(batch.sources??[]).filter(source=>['running','paused'].includes(source.progress?.status)).map(source=>({identity:source.identity,...source.progress}));
+  if(!items.length){const item=classification?.status==='running'?classification:current;if(item&&['running','paused'].includes(item.status))items=[item];}
+  progress.textContent=items.map(item=>{const stage=({segment:'正文分段',synthesis:`汇总第 ${item.round??1} 轮`,search:'检索分类',choice:'选择分类',preparing:'检查来源'})[item.stage]??item.stage;return `${item.identity} · ${stage}${item.totalSteps?` ${item.completed??item.step??0}/${item.totalSteps}`:''}${item.reusedSteps?' · 已复用 '+item.reusedSteps+' 项成功结果':''}${item.retry?` · ${item.retry.status==='waiting'?'退避等待':'正在重试'} ${item.retry.attempt}/${item.retry.maxAttempts}`:''}${item.status==='paused'?' · 已暂停':''}`;}).join('；');
+ }};
+}

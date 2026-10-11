@@ -35,6 +35,6 @@ test('未允许的view参数包括对象继承属性均安全回到首页',async
  const base=`http://127.0.0.1:${server.address().port}`;
  for(const view of ['constructor','__proto__','toString','task-workspace','unknown']){
   const response=await fetch(`${base}/?view=${encodeURIComponent(view)}`,{signal:AbortSignal.timeout(2000)}),html=await response.text();assert.equal(response.status,200,view);
-  assert.match(html,/<span id="page-label">任务首页<\/span>/);
+  assert.match(html,/<span id="page-label">知识库收件箱<\/span>/);
  }
 });

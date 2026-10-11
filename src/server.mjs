@@ -1,12 +1,15 @@
 import http from 'node:http';
 import {renderPageShell} from './page-shell.js';
 import {createWorkspaceService} from './workspace.js';
+import {createLibraryInboxService} from './library-inbox.js';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { preflight } from './compatibility.js';
 import { createBackup } from './backup.js';
 import { createPlanningService } from './planning.js';
+import {withModelContext} from './model-concurrency.js';
+import {safeModelFailure} from './model-failure.js';
 
 import { createMigrationService } from './migration.js';
 import {createBatchService} from './batches.js';
@@ -15,11 +18,13 @@ import {createInboxStrategy} from './inbox.js';
 import { createRecoveryService } from './recovery.js';
 import { createOriginalExecutionService } from './original-execution.js';
 
-export function createApp({ inspect = preflight, backup = createBackup, planning = createPlanningService(), migration = createMigrationService(), recovery = createRecoveryService(), original = createOriginalExecutionService(), batches = null, workspace = null } = {}) {
+export function createApp({ inspect = preflight, backup = createBackup, planning = createPlanningService(), migration = createMigrationService(), recovery = createRecoveryService(), original = createOriginalExecutionService(), batches = null, workspace = null, inbox = null } = {}) {
   batches??=createBatchService({planning,backup,migration,recovery,original,strategies:{restructure:createRestructureStrategy(),inbox:createInboxStrategy()}});
   workspace??=createWorkspaceService({batches});
+  inbox??=createLibraryInboxService({batches,workspace});
   const token = randomBytes(32).toString('hex');
-  return http.createServer(async (req, res) => {
+  const modelConcurrency=batches.modelConcurrency??planning.modelConcurrency;
+  return http.createServer((req, res) => withModelContext({modelConcurrency},async()=>{
     const origin = `http://127.0.0.1:${req.socket.localPort}`;
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -33,8 +38,12 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
         const content=await readFile(new URL(`../public/original.${script?'js':'html'}`,import.meta.url));
         return res.end(script?content:renderPageShell(content.toString(),'/original'));
       }
-      const assets = { '/app.css':['app.css','text/css'], '/review.css':['review.css','text/css'], '/category-browser.js':['category-browser.js','text/javascript'], '/task-home.js':['task-home.js','text/javascript'], '/invalidation-ui.js':['invalidation-ui.js','text/javascript'], '/restructure-workspace.js':['restructure-workspace.js','text/javascript'], '/task-report':['task-report.html','text/html'], '/task-report.js':['task-report.js','text/javascript'], '/report-ui.js':['report-ui.js','text/javascript'], '/history-actions.js':['history-actions.js','text/javascript'], '/review-workspace.js':['review-workspace.js','text/javascript'], '/background-analysis.js': ['background-analysis.js','text/javascript'], '/classify-all.js': ['classify-all.js','text/javascript'], '/bulk-review.js': ['bulk-review.js','text/javascript'], '/tree-progress.js': ['tree-progress.js','text/javascript'], '/analyze-all.js': ['analyze-all.js','text/javascript'], '/restructure': ['restructure.html','text/html'], '/restructure.js': ['restructure.js','text/javascript'], '/batch-ui.js': ['batch-ui.js','text/javascript'], '/preflight': ['index.html','text/html'], '/inbox': ['inbox.html','text/html'], '/inbox.js': ['inbox.js','text/javascript'], '/recovery': ['recovery.html','text/html'], '/recovery.js': ['recovery.js','text/javascript'], '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['workspace.html','text/html'], '/workspace.js':['workspace.js','text/javascript'], '/category-browser.css':['category-browser.css','text/css'], '/workspace.css':['workspace.css','text/css'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
+      const assets = { '/model-concurrency-ui.js':['model-concurrency-ui.js','text/javascript'], '/app.css':['app.css','text/css'], '/review.css':['review.css','text/css'], '/category-browser.js':['category-browser.js','text/javascript'], '/task-home.js':['task-home.js','text/javascript'], '/invalidation-ui.js':['invalidation-ui.js','text/javascript'], '/restructure-workspace.js':['restructure-workspace.js','text/javascript'], '/task-report':['task-report.html','text/html'], '/task-report.js':['task-report.js','text/javascript'], '/report-ui.js':['report-ui.js','text/javascript'], '/history-actions.js':['history-actions.js','text/javascript'], '/review-workspace.js':['review-workspace.js','text/javascript'], '/background-analysis.js': ['background-analysis.js','text/javascript'], '/classify-all.js': ['classify-all.js','text/javascript'], '/bulk-review.js': ['bulk-review.js','text/javascript'], '/tree-progress.js': ['tree-progress.js','text/javascript'], '/analyze-all.js': ['analyze-all.js','text/javascript'], '/restructure': ['restructure.html','text/html'], '/restructure.js': ['restructure.js','text/javascript'], '/batch-ui.js': ['batch-ui.js','text/javascript'], '/preflight': ['index.html','text/html'], '/inbox': ['inbox.html','text/html'], '/inbox.js': ['inbox.js','text/javascript'], '/recovery': ['recovery.html','text/html'], '/recovery.js': ['recovery.js','text/javascript'], '/batch-migration': ['batch-migration.html','text/html'], '/batch-migration.js': ['batch-migration.js','text/javascript'], '/': ['workspace.html','text/html'], '/workspace.js':['workspace.js','text/javascript'], '/category-browser.css':['category-browser.css','text/css'], '/workspace.css':['workspace.css','text/css'], '/app.js': ['app.js','text/javascript'], '/style.css': ['style.css','text/css'], '/backup': ['backup.html','text/html'], '/backup.js': ['backup.js','text/javascript'], '/migration': ['migration.html','text/html'], '/migration.js': ['migration.js','text/javascript'], '/planning-ui.js': ['planning-ui.js','text/javascript'] };
       for(const name of ['book','document','folder','history','settings','shield','refresh'])assets['/icons/'+name+'.svg']=['icons/'+name+'.svg','image/svg+xml'];
+      assets['/library-inbox.js']=['library-inbox.js','text/javascript'];
+      assets['/legacy-results.js']=['legacy-results.js','text/javascript'];
+      assets['/new-category-review.js']=['new-category-review.js','text/javascript'];
+      assets['/classification-rule-review.js']=['classification-rule-review.js','text/javascript'];
       if (req.method === 'GET' && assets[req.url.split('?')[0]]) {
         const [file, type] = assets[req.url.split('?')[0]];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
@@ -42,12 +51,14 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
         return res.end(type==='text/html'?renderPageShell(content.toString(),req.url):content);
       }
       const workspaceAction = /^\/api\/workspace\/(list|save|create|categories)$/.exec(req.url)?.[1];
+      const concurrencyAction=/^\/api\/model-concurrency\/(get|set)$/.exec(req.url)?.[1];
+      const inboxAction = /^\/api\/inbox\/(scan|list|start|review|archive|recheck|chooseLegacy|history)$/.exec(req.url)?.[1];
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
       const batchAction = /^\/api\/batches\/(create|get|getReport|list|startAnalysis|pauseAnalysis|continueAnalysis|startHistoryValidation|continueHistoryValidation|applyHistoryPlan|queryHistoryApplication|analyzeNext|classifyNext|confirmRecommendedCategories|confirmPlans|refreshReview|confirmNewArchive|reviewItem|treeAction|prepareSlice|replanSlice|validateSlice|cancelSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
       const recoveryAction = /^\/api\/recovery\/(inspect|plan|execute|get)$/.exec(req.url)?.[1];
       const migrationAction = /^\/api\/migration\/(plan|execute)$/.exec(req.url)?.[1];
       const originalAction = /^\/api\/original\/(prepare|execute|get)$/.exec(req.url)?.[1];
-      if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !migrationAction && !planningAction && !recoveryAction && !originalAction && !batchAction && !workspaceAction)) return send(404, { error: '入口不存在' });
+      if (req.method !== 'POST' || (!['/api/preflight', '/api/backup'].includes(req.url) && !migrationAction && !planningAction && !recoveryAction && !originalAction && !batchAction && !workspaceAction && !concurrencyAction && !inboxAction)) return send(404, { error: '入口不存在' });
       if (req.headers['x-organizer-token'] !== token || req.headers['content-type'] !== 'application/json') return send(403, { error: '会话校验失败，请刷新本地页面' });
       let body = '';
       const bodyLimit = (migrationAction||batchAction==='confirmPlans') ? 2 * 1024 * 1024 : 16384;
@@ -55,10 +66,12 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       let input;
       try { input = JSON.parse(body); } catch { return send(400, { error: '请求格式无效' }); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) return send(400, { error: '请求格式无效' });
+      if(concurrencyAction){try{return send(200,await modelConcurrency[concurrencyAction](input.limit));}catch(error){return send(400,{error:error.message,code:'INVALID_CONCURRENCY'});}}
+      if (inboxAction) { try { await modelConcurrency?.get();return send(200,await inbox[inboxAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'INBOX_FAILED'}); } }
       if (workspaceAction) { try { return send(200,await workspace[workspaceAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'SETTINGS_FAILED'}); } }
       if (originalAction) { try { return send(200,await original[originalAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'ORIGINAL_FAILED'}); } }
-      if (batchAction) { try { if(!batches)throw new Error('批次服务尚未配置'); return send(200,await batches[batchAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'BATCH_FAILED',batchId:error.batchId,revision:error.revision}); } }
-      if (planningAction) { try { return send(200, await planning[planningAction](input)); } catch { return send(400, { error: '命名操作失败：请检查配置支持范围、源文件变化、证据、名称及冲突；未修改来源。' }); } }
+      if (batchAction) { try { if(!batches)throw new Error('批次服务尚未配置'); await modelConcurrency?.get();return send(200,await batches[batchAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'BATCH_FAILED',batchId:error.batchId,revision:error.revision}); } }
+      if (planningAction) { try { return send(200, await planning[planningAction](input)); } catch(error) { if(error.code?.startsWith('MODEL_')){const safe=safeModelFailure(error);return send(400,{error:safe.message,code:safe.code,attempts:error.attempts});}return send(400, { error: '命名操作失败：请检查配置支持范围、源文件变化、证据、名称及冲突；未修改来源。' }); } }
       if (recoveryAction) { try { return send(200, await recovery[recoveryAction](input)); } catch(error) { return send(400, {error:error.message,code:error.code??'RECOVERY_FAILED'}); } }
       if (migrationAction) {
         try { return send(200, await migration[migrationAction](input)); }
@@ -66,7 +79,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       }
       return send(200, await (req.url === '/api/backup' ? backup : inspect)(input));
     } catch { send(500, { error: '读取失败，请检查目录权限或重试' }); }
-  });
+  }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

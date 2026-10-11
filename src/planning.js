@@ -1,4 +1,4 @@
-import { readFile, readdir, realpath, lstat, mkdir, writeFile, rename } from 'node:fs/promises';
+import { readFile, readdir, realpath, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,6 +8,13 @@ import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
+import {analysisVersion,sameAnalysisVersion} from './analysis-version.js';
+import {themeTags} from './classification-result.js';
+import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
+import {atomicRename} from './atomic-rename.js';
+import {compileNewCategory,checkedNewCategory} from './new-categories.js';
+import {classificationDependency,revalidatedClassification} from './classification-dependencies.js';
+import {createClassificationRules,classificationRuleState,effectiveClassificationRulesHash} from './classification-rules.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -48,6 +55,9 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 }
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
+  const classificationRules=createClassificationRules({stateDirectory});
+  const modelConcurrency=createModelConcurrency({stateDirectory});
+  const modelGenerate=generate;generate=(config,request)=>withModelContext({...modelContext(),priority:request.stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).request(config,request,()=>modelGenerate(config,request)));
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
@@ -60,8 +70,33 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
     const file = path.join(location, `${hash(canonical)}.json`);
     try { return { file, data: JSON.parse(await readFile(file, 'utf8')) }; } catch (e) { if (e.code !== 'ENOENT') throw e; return { file, data: { schemaVersion: 1, entries: {} } }; }
   }
-  async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await rename(temporary, file); }
+  async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await atomicRename(temporary, file); }
+  const inFlight=new Map();
+  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=withModelContext({...modelContext(),articleKey:modelContext()?.articleKey??key,failureScope:modelContext()?.failureScope??{}},fn).finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
+  const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
+    modelConcurrency,
+    // 旧任务正文经服务端核验后接入；原执行记录与检查点不被覆盖。
+    adoptLegacyAnalysis: input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),file=await sourceFile(input.sourceRoot,input.identity),source=input.entry;
+      if(source.hash!==hash(await readFile(file))||!sameAnalysisVersion(source.analysisVersion,analysisVersion(await readModelConfig(input))))throw new Error('旧正文基线已变化');
+      const catalog=await categoryCatalog(path.join(input.libraryPath,'raw/sources')),ruleSnapshot=await classificationRules.read(input);
+      const classification={...(input.classificationValid?structuredClone(source.classification):{category:null,decision:'undetermined',tags:[],reason:'旧审核依据需要重新确认',considered:[]}),status:'needs-review',rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity:ruleSnapshot.libraryIdentity,options:catalog.categories.map(value=>value.path),catalogRoot:catalog.root,catalogHash:catalog.hash};
+      const entry={identity:input.identity,hash:source.hash,kind:source.kind,analysisVersion:source.analysisVersion,segments:source.segments,analysis:source.analysis,suggestion:source.confirmedName??source.suggestion,classification,tags:source.tags??[],reviewRequired:true};
+      saved.data.entries[input.identity]=entry;await persist(saved.file,saved.data);return entry;
+    }),
+    getClassificationRules:async input=>{await state(input.sourceRoot,input.libraryPath);const ruleSnapshot=await classificationRules.read(input),{rules,rulesHash,libraryIdentity}=ruleSnapshot;const catalog=rules.length?await categoryCatalog(input.categoryRoot??path.join(input.libraryPath,'raw/sources')):null;return {classificationRules:rules.map(rule=>({...rule,status:classificationRuleState(rule,catalog)})),rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity};},
+    resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
+    revalidateClassification:input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),entry=saved.data.entries[input.identity];
+      if(!entry?.classification||entry.hash!==hash(await readFile(await sourceFile(input.sourceRoot,input.identity),'utf8')))return null;
+      const catalog=await categoryCatalog(input.categoryRoot),ruleSnapshot=await classificationRules.read(input),expected=entry.frozenPlan?.rulesHash??entry.classification.rulesHash;
+      // 目录范围证明独立于偏好版本，不能使规则失效的旧建议恢复授权。
+      if(expected?expected!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)return null;
+      if(entry.classification.status!=='confirmed'&&(entry.classification.effectiveRulesHash?entry.classification.effectiveRulesHash!==effectiveClassificationRulesHash(ruleSnapshot,catalog):ruleSnapshot.rules.some(rule=>classificationRuleState(rule,catalog)==='active')))return null;
+      const patch=revalidatedClassification(entry.classification,entry.frozenPlan,catalog);
+      if(!patch)return null;Object.assign(entry,patch);await persist(saved.file,saved.data);return patch;
+    }),
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -78,41 +113,69 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(pending.sourceFile,pending.nextSource);if(pending.targetFile!==pending.sourceFile)await persist(pending.targetFile,pending.nextTarget);
       await persist(transaction,{...pending,status:'complete'});return {status:'complete'};
     }),
-    analyze: input => serial(async () => {
-      const { sourceRoot, identity } = input;
-      const file = await sourceFile(sourceRoot, identity);
-      const text = await readFile(file, 'utf8');
-      const sourceHash = hash(text);
+    analysisValidity: async input=>{
+      const saved=await serial(()=>state(input.sourceRoot,input.libraryPath)),entry=saved.data.entries[input.identity];
+      if(!entry||entry.hash!==hash(await readFile(await sourceFile(input.sourceRoot,input.identity),'utf8')))return false;
+      const config=['body','navigation'].includes(entry.kind)?await readModelConfig(input):null;
+      return sameAnalysisVersion(entry.analysisVersion,analysisVersion(config));
+    },
+    analyze: async input => {
+      const {sourceRoot,identity}=input,file=await sourceFile(sourceRoot,identity),text=await readFile(file,'utf8'),sourceHash=hash(text);
+      const view=analysisView(text),kind=kindOf(view),config=['body','navigation'].includes(kind)?await readModelConfig(input):null,version=analysisVersion(config);
+      return once(JSON.stringify([file,sourceHash,version,input.reanalyze===true]),async()=>{
+      if(input.onProgress)modelContext().onModelProgress=input.onProgress;
+      if(input.retryFailures&&config)modelConcurrency.resumeModel(config);
       const saved = await state(sourceRoot, input.libraryPath);
       const prior = saved.data.entries[identity];
-      if (prior?.hash === sourceHash && !input.reanalyze) return { ...prior, reused: true };
-      const view = analysisView(text);
-      const kind = kindOf(view);
+      if(prior?.hash===sourceHash&&sameAnalysisVersion(prior.analysisVersion,version)&&!input.reanalyze)return {...prior,reused:true};
       const seriesPattern = /第[零一二三四五六七八九十百千0-9]+[章节课讲]|(?:chapter|lesson|part)\s*\d+/gi;
       const heading = view.split('\n').find(line => /^#{1,6}\s/.test(line)) ?? '';
       const identityHints = [...new Set((path.basename(identity) + ' ' + heading).match(seriesPattern) ?? [])];
-      const entry = { identity, hash: sourceHash, kind, identityHints, segments: [], suggestion: null, confirmedName: prior?.confirmedName ?? null, reviewRequired: true };
+      const entry = { identity, hash: sourceHash, analysisVersion:version, kind, identityHints, segments: [], suggestion: null, confirmedName: prior?.confirmedName ?? null, reviewRequired: true };
       if (['body', 'navigation'].includes(kind)) {
-        const config = await readModelConfig(input);
+        const checkpoint=await serial(async()=>{
+          const latest=await state(sourceRoot,input.libraryPath);latest.data.checkpoints??={};let current=latest.data.checkpoints[identity];
+          if(current?.schemaVersion!==1||!current.results||current.sourceHash!==sourceHash||!sameAnalysisVersion(current.analysisVersion,version)||input.reanalyze){current={schemaVersion:1,sourceHash,analysisVersion:version,generation:randomUUID(),results:{}};latest.data.checkpoints[identity]=current;await persist(latest.file,latest.data);}
+          return structuredClone(current);
+        });
+        const stillCurrent=async()=>{
+          if(hash(await readFile(file,'utf8'))!==sourceHash)throw new Error('分析过程中源文件变化，请重试');
+          if(!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),version))throw new Error('分析过程中模型配置变化，请重试');
+        };
+        const cachedResult=(key,content)=>{const cached=checkpoint.results[key];if(cached?.inputHash!==hash(content))return;try{return checkedAnalysis(cached.result,content);}catch{return;}};
+        const cachedRequest=async(key,request,content)=>{
+          const inputHash=hash(content),cached=cachedResult(key,content);
+          if(cached){await stillCurrent();return cached;}
+          const result=await generateCheckedAnalysis(generate,config,request,content);
+          await serial(async()=>{
+            await stillCurrent();const latest=await state(sourceRoot,input.libraryPath),current=latest.data.checkpoints?.[identity];
+            if(current?.generation!==checkpoint.generation)throw new Error('已有更新的分析，旧结果不再保存');
+            current.results[key]={inputHash,result};await persist(latest.file,latest.data);
+          });return result;
+        };
+        entry.checkpointGeneration=checkpoint.generation;
         const size = Math.max(256, Math.min(8000, Math.floor((config.maxContextSize ?? 16000) / 4)));
-        for (let start = 0; start < view.length; start += size) {
-          await input.onProgress?.({stage:'segment',step:Math.floor(start/size)+1,totalSteps:Math.ceil(view.length/size)});
-          const content = view.slice(start, start + size);
-          entry.segments.push({ start, end: Math.min(start + size, view.length), ...await generateCheckedAnalysis(generate, config, { stage: 'segment', content, identity }, content) });
-        }
+        const totalSteps=Math.ceil(view.length/size),reusedSteps=Array.from({length:totalSteps},(_,index)=>{const start=index*size;return !!cachedResult('segment:'+start+':'+Math.min(start+size,view.length),view.slice(start,start+size));}).filter(Boolean).length;
+        let completed=reusedSteps;
+        await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps,reusedSteps});
+        entry.segments=await parallel(Array.from({length:totalSteps},(_,index)=>async()=>{
+          const start=index*size,content=view.slice(start,start+size);
+          const key='segment:'+start+':'+Math.min(start+size,view.length),reused=!!cachedResult(key,content);
+          const result={start,end:Math.min(start+size,view.length),...await cachedRequest(key,{stage:'segment',content,identity},content)};
+          if(!reused)completed++;await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps,reusedSteps});return result;
+        }));
         // 分层归并使每一段均参与，避免把超长全文再次塞入一个上下文。
         let summaries = entry.segments, round = 0;
         while (summaries.length > 1) {
           round++;
-          const next = [];
-          for (let offset = 0; offset < summaries.length; offset += 4) {
-            await input.onProgress?.({stage:'synthesis',round,step:Math.floor(offset/4)+1,totalSteps:Math.ceil(summaries.length/4)});
-            const group = summaries.slice(offset, offset + 4);
-            const content = group.map(s => `${s.summary}\n${s.evidence.join('\n')}`).join('\n');
-            const result = await generateCheckedAnalysis(generate, config, { stage: 'synthesis', content, identity }, content);
-            // 全文主题由汇总独立判断，局部歧义不作为全篇否决票。
-            next.push(result);
-          }
+          const totalSteps=Math.ceil(summaries.length/4),contents=Array.from({length:totalSteps},(_,index)=>summaries.slice(index*4,index*4+4).map(s=>`${s.summary}\n${s.evidence.join('\n')}`).join('\n'));
+          const reusedSteps=contents.filter((content,index)=>cachedResult('synthesis:'+round+':'+index,content)).length;let completed=reusedSteps;
+          await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps,reusedSteps});
+          const next=await parallel(contents.map((content,index)=>async()=>{
+            const reused=!!cachedResult('synthesis:'+round+':'+index,content);
+            const result=await cachedRequest('synthesis:'+round+':'+index,{stage:'synthesis',content,identity},content);
+            if(!reused)completed++;await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps,reusedSteps});return result;
+          }));
           summaries = next;
         }
         entry.analysis = summaries[0];
@@ -123,10 +186,18 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       }
       if (!entry.suggestion && !entry.confirmedName) entry.warning ??= '证据不足或主题不明确，请人工处理；源文件及关联保持原样';
       if (hash(await readFile(file, 'utf8')) !== sourceHash) throw new Error('分析过程中源文件变化，请重试');
-      saved.data.entries[identity] = entry;
-      await persist(saved.file, saved.data);
-      return entry;
-    }),
+      return serial(async()=>{
+        const latest=await state(sourceRoot,input.libraryPath);
+        if(hash(await readFile(file,'utf8'))!==sourceHash)throw new Error('分析过程中源文件变化，请重试');
+        if(config&&!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),version))throw new Error('分析过程中模型配置变化，请重试');
+        if(entry.checkpointGeneration&&latest.data.checkpoints?.[identity]?.generation!==entry.checkpointGeneration)throw new Error('已有更新的分析，旧结果不再保存');
+        delete entry.checkpointGeneration;
+        const current=latest.data.entries[identity];
+        if(current?.confirmedName){entry.confirmedName=current.confirmedName;entry.suggestion=null;}
+        latest.data.entries[identity]=entry;await persist(latest.file,latest.data);return entry;
+      });
+      });
+    },
     confirm: input => serial(async () => {
       const { sourceRoot, identity, name } = input;
       validateName(name);
@@ -148,7 +219,8 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(saved.file, saved.data);
       return entry;
     }),
-    classify: input => serial(async () => {
+    classify: input => once(JSON.stringify(['classification',input.sourceRoot,input.identity]),async () => {
+      if(input.onProgress)modelContext().onModelProgress=input.onProgress;
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
@@ -156,13 +228,32 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('源文件变化，请重新分析');
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
+      const ruleSnapshot=await classificationRules.read(input),validRules=ruleSnapshot.rules.filter(rule=>classificationRuleState(rule,catalog)==='active'),effectiveRulesHash=effectiveClassificationRulesHash(ruleSnapshot,catalog);
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
-      const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
+      if(config&&!sameAnalysisVersion(entry.analysisVersion,analysisVersion(config)))throw new Error('全文分析依据已失效，请先重新分析');
+      const recommendation = await recommendCategory({ entry, catalog, config, generate, classificationRules:validRules,onProgress:input.onProgress });
+      let newCategoryResult;
+      if(recommendation.decision==='missing-category'&&!modelContext()?.shouldPause?.()){
+        await input.onProgress?.({stage:'new-category'});
+        newCategoryResult=await generate(config,{stage:'new-category',content:entry.analysis,categories:catalog.categories});
+      }
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
-      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName ?? entry.suggestion ?? path.basename(entry.identity)) };
-      delete entry.frozenPlan;
-      await persist(saved.file, saved.data);
-      return entry;
+      return serial(async()=>{
+        const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
+        if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
+        if(config&&(!sameAnalysisVersion(current.analysisVersion,analysisVersion(config))||!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),analysisVersion(config))))throw new Error('分类规划期间模型配置变化，请重新分析');
+        if((await classificationRules.read(input)).rulesHash!==ruleSnapshot.rulesHash||effectiveClassificationRulesHash(ruleSnapshot,await categoryCatalog(input.categoryRoot))!==effectiveRulesHash)throw Object.assign(new Error('分类规划期间偏好变化，请重新检索分类；正文分析保留'),{code:'STALE_RULES'});
+        if(current.classification?.status==='confirmed')return current;
+        if(newCategoryResult){
+          const compiled=compileNewCategory(newCategoryResult,catalog,latest.data.newCategories??={});
+          Object.assign(recommendation,compiled);
+          if(compiled.newCategory){latest.data.newCategories[compiled.newCategory.proposalId]=compiled.newCategory;recommendation.category=compiled.newCategory.path;}
+          else if(typeof compiled.category==='string')recommendation.decision='existing';
+        }
+        current.classification={...recommendation,dependency:classificationDependency(catalog,recommendation,{fullCatalog:!!newCategoryResult}),rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.tags=themeTags(recommendation.tags);
+        delete current.frozenPlan;await persist(latest.file,latest.data);return current;
+      });
     }),
     // 名称与分类在全部校验通过后一次保存，建议名不冒充已确认名。
     confirmPlan: input => serial(async () => {
@@ -175,10 +266,21 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
-      const target = await finalTarget(catalog, input.category, name, file);
+      let ruleSnapshot=await classificationRules.read(input);
+      if(entry.classification.rulesHash?entry.classification.rulesHash!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)throw Object.assign(new Error('分类偏好已变化，请重新检索分类；正文分析保留'),{code:'STALE_RULES'});
+      if(entry.classification.status!=='confirmed'&&entry.classification.effectiveRulesHash&&entry.classification.effectiveRulesHash!==effectiveClassificationRulesHash(ruleSnapshot,catalog))throw Object.assign(new Error('有效分类偏好已变化，请重新检索分类；正文分析保留'),{code:'STALE_RULES'});
+      let newCategory;
+      if(entry.classification.newCategory?.path===input.category){
+        newCategory=checkedNewCategory(entry.classification.newCategory);
+        if(input.acceptNewCategory!==true||input.newCategoryHash!==newCategory.proposalHash)throw Object.assign(new Error('请明确审核并接受新增分类名称、父级和查找收益'),{code:'NEW_CATEGORY_REVIEW_REQUIRED'});
+      }
+      const target = newCategory?path.join(catalog.root,newCategory.path,name):await finalTarget(catalog, input.category, name, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
-      Object.assign(entry, {confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,category:input.category,finalPath:target,status:'confirmed'}});
+      const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
+      if(input.saveClassificationRule===true)ruleSnapshot=await classificationRules.save({...input,category:input.category,newCategoryHash:newCategory?.proposalHash,expectedRulesHash:ruleSnapshot.rulesHash});
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags,categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target,...(newCategory?{newCategory}:{}) };
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category,newCategory},{selected:true});frozen.classificationDependency=dependency;
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,dependency,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity:ruleSnapshot.libraryIdentity,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -190,15 +292,18 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
       validateName(entry.confirmedName);
+      const ruleSnapshot=await classificationRules.read(input);
+      if(entry.classification.rulesHash?entry.classification.rulesHash!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)throw Object.assign(new Error('分类偏好已变化，请重新检索并审核'),{code:'STALE_RULES'});if(entry.classification.status!=='confirmed'&&entry.classification.effectiveRulesHash&&entry.classification.effectiveRulesHash!==effectiveClassificationRulesHash(ruleSnapshot,catalog))throw Object.assign(new Error('有效分类偏好已变化，请重新检索并审核'),{code:'STALE_RULES'});
       const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),rulesStateDirectory:stateDirectory,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target };
+      const dependency=classificationDependency(catalog,{...entry.classification,category:input.category},{selected:true});frozen.classificationDependency=dependency;
       entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
-      entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
+      entry.classification = { ...entry.classification,dependency,rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog), category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);
       return entry;
     }),
-    evolve: input => serial(async () => {
+    evolve: input => once(JSON.stringify(['evolution',input.sourceRoot,input.identity]),async () => {
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
@@ -207,9 +312,12 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       const proposal = await proposeEvolution({ entry, root: input.categoryRoot, startCategory: input.startCategory, generate, config });
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('规划期间来源变化');
-      saved.data.evolution = { ...proposal, identity: entry.identity, sourceHash: entry.hash, status: 'needs-review' };
-      await persist(saved.file, saved.data);
-      return saved.data.evolution;
+      return serial(async()=>{
+        const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
+        if(!current||current.hash!==entry.hash||current.confirmedName!==entry.confirmedName||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==proposal.catalog.hash||(await inventory(input.categoryRoot)).hash!==proposal.baseline.hash)throw new Error('规划期间基线变化');
+        if(JSON.stringify(latest.data.evolution)!==JSON.stringify(saved.data.evolution))throw new Error('已有更新的目录方案，请重新读取');
+        latest.data.evolution={...proposal,identity:entry.identity,sourceHash:entry.hash,status:'needs-review'};await persist(latest.file,latest.data);return latest.data.evolution;
+      });
     }),
     confirmEvolution: input => serial(async () => {
       const saved = await state(input.sourceRoot, input.libraryPath);

@@ -54,7 +54,7 @@ test('模型等待期间可从磁盘读取进度，失败后保留进度且可�
   return {categories:[{segments:['综合主题'],groups:request.categories.map(node=>node.groupId),reason:'统一主题'}]};
  }});
  service=createBatchService({stateDirectory,strategies:{restructure:strategy}});
- await assert.rejects(service.treeAction({batchId:initial.batchId,revision:initial.revision,action:'propose'}),/模型断开/);
+ await assert.rejects(service.treeAction({batchId:initial.batchId,revision:initial.revision,action:'propose'}),{code:'MODEL_REQUEST_FAILED',message:'模型调用失败，请检查配置后重试'});
  let current=await service.get({batchId:initial.batchId});assert.ok(observed);assert.equal(current.flow.treeProgress.status,'failed');assert.equal(current.counts.analyzed,21);
  fail=false;current=await service.treeAction({batchId:initial.batchId,revision:current.revision,action:'propose'});
  assert.equal(current.flow.treeProgress.status,'complete');assert.equal(current.flow.tree.classifiedCount,21);assert.equal(current.error,undefined);

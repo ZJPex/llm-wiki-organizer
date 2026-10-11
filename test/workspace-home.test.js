@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 
-async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task,batchesUnavailable=false,listGate}={}){
+async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],inboxItems={},create,search='',task,batchesUnavailable=false,listGate}={}){
  const document=createInboxDocument();document.body.replaceChildren();
  const add=(tag,id,parent=document.body)=>{const node=document.createElement(tag);node.id=id;parent.append(node);return node;};
  for(const id of ['title','notice','error','categories','featured','tasks','category-description','files','page-label'])add('div',id);
@@ -20,6 +20,8 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
  else if(url==='/api/workspace/list'){if(listGate)await listGate;value={libraries};}
  else if(url==='/api/workspace/save')value={id:input.id??'new',valid:true};
  else if(url==='/api/workspace/categories')value={categories:[],files:[],total:0,nextCursor:null};
+ else if(url==='/api/inbox/list'||url==='/api/inbox/scan')value={libraryId:input.id,items:inboxItems[input.id]??[]};
+ else if(url==='/api/inbox/history')value={libraryId:input.id,records:[]};
  else if(url==='/api/batches/get')value=task;
  else if(url==='/api/batches/list'){if(batchesUnavailable)throw new Error('合成批次读取失败');value=pages[input.cursor??0];}
  else if(url==='/api/workspace/create')return create(input);
@@ -45,43 +47,44 @@ test('专用流程的分类入口读取当前知识库分类，不写入材料',
  assert.equal(p.calls.some(call=>/create|analyze|confirm|apply/.test(call.url)),false);
 });
 
-test('第二库任务刷新失败后重试保持当前库身份',async t=>{
- const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],pages:[{records:[batch('库一','/a','2026-10-05'),batch('库二','/b','2026-10-05')],nextCursor:null}]});
- await p.document.waitFor(()=>p.$('featured').textContent.includes('继续审核'));
+test('第二库刷新失败后重试保持当前库身份，刷新只调用知识库扫描',async t=>{
+ const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],inboxItems:{b:[{itemId:'b-1',identity:'库二.md',status:'pending',available:true}]}});
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));
  p.$('library').value='b';await p.$('library').dispatchEvent({type:'change'});
  const original=globalThis.fetch;let fail=true;
- t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/batches/list'&&fail){fail=false;throw new Error('暂时断开');}return original(url,options);});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/inbox/scan'&&fail){fail=false;throw new Error('暂时断开');}return original(url,options);});
  await p.$('refresh').click();await p.$('refresh').click();
- assert.equal(p.$('library').value,'b');assert.match(p.$('featured').querySelector('a').href,/batchId=%E5%BA%93%E4%BA%8C/);
+ assert.equal(p.$('library').value,'b');assert.match(p.$('tasks').textContent,/库二.md/);assert.equal(p.calls.some(call=>call.url==='/api/batches/create'),false);
 });
 
-test('首页跨公共分页发现当前库最近未完成任务，同更新时间稳定排序且继续只提供导航',async t=>{
+test('历史入口跨公共分页发现当前库最近未完成记录，同更新时间稳定排序且继续只提供导航',async t=>{
  const p=await page(t,{pages:[{records:[batch('foreign','/b','2026-10-05')],nextCursor:1},{records:[batch('z','/a','2026-10-04'),batch('a','/a','2026-10-04'),batch('done','/a','2026-10-05','complete')],nextCursor:null}]});
- await p.document.waitFor(()=>p.$('featured').textContent.includes('继续审核'));
- assert.equal(p.$('featured').querySelector('a').href,'/?batchId=a');
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
+ await p.$('tasks').querySelector('summary').click();
+ assert.equal(p.$('tasks').querySelector('a').href,'/?batchId=a');
  assert.equal(p.$('tasks').querySelectorAll('a').some(a=>a.href.includes('foreign')),false);
  assert.equal(p.calls.some(call=>/analyze|confirm|apply/.test(call.url)),false);
 });
 
-test('切库立即清空旧任务，旧库迟到响应不能覆盖新库；没有未完成任务时只显示引导',async t=>{
- const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],pages:[{records:[batch('old','/a','2026-10-04'),batch('finished','/b','2026-10-05','complete')],nextCursor:null}]});
- await p.document.waitFor(()=>p.$('featured').textContent.includes('继续审核'));
+test('切库立即清空旧文件，旧库迟到扫描不能覆盖新库',async t=>{
+ const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],inboxItems:{a:[{itemId:'old',identity:'旧库.md',status:'pending',available:true}]}});
+ await p.document.waitFor(()=>p.$('tasks').textContent.includes('旧库.md'));
  let release;const gate=new Promise(resolve=>release=resolve);t.after(()=>release());let requested=false;
  const original=globalThis.fetch;
- t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/batches/list'&&!requested){requested=true;await gate;}return original(url,options);});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/inbox/scan'&&!requested){requested=true;await gate;}return original(url,options);});
  const refreshing=p.$('refresh').click();await p.document.waitFor(()=>requested);
  p.$('library').value='b';const switching=p.$('library').dispatchEvent({type:'change'});
- assert.equal(p.$('featured').textContent.includes('继续审核'),false);
- await p.document.waitFor(()=>p.$('featured').textContent.includes('所有任务均已完成'));
+ assert.equal(p.$('tasks').textContent.includes('旧库.md'),false);
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('0 份未归档'));
  release();await refreshing;await switching;
- assert.equal(p.$('tasks').querySelectorAll('a').some(a=>a.href.includes('old')),false);
- assert.match(p.$('featured').textContent,/所有任务均已完成/);
+ assert.equal(p.$('tasks').textContent.includes('旧库.md'),false);
+ assert.match(p.$('featured').textContent,/0 份未归档/);
 });
 
 test('创建失败保留范围并可重试，请求中重复提交只产生一次创建且成功导航真实批次',async t=>{
  let calls=0,release;const gate=new Promise(resolve=>release=resolve);t.after(()=>release());
  const p=await page(t,{create:async input=>{calls++;assert.equal(input.id,'a');assert.equal(input.mode,'restructure');if(calls===1){await gate;return {ok:false,json:async()=>({error:'合成创建失败'})};}return {ok:true,json:async()=>({batchId:'created-real'})};}});
- await p.document.waitFor(()=>p.$('featured').textContent.includes('还没有整理任务'));
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));
  p.$('mode').value='restructure';const first=p.$('start').requestSubmit();await p.document.waitFor(()=>calls===1);
  assert.equal(p.$('start').querySelector('button').disabled,true);
  assert.match(p.$('start').textContent,/正在创建任务/);
@@ -90,16 +93,16 @@ test('创建失败保留范围并可重试，请求中重复提交只产生一�
  await p.$('start').requestSubmit();assert.equal(calls,2);assert.equal(p.location.href,'/?batchId=created-real');
 });
 
-test('任务列表按本库分页，全部完成时不提供继续任务；刷新失败清空结果后可重试',async t=>{
+test('历史记录按本库分页，全部完成时不提供继续；加载失败清空结果后可重试',async t=>{
  const records=Array.from({length:30},(_,i)=>batch(String(i).padStart(2,'0'),'/a','2026-10-04','complete'));
  const p=await page(t,{pages:[{records,nextCursor:null}]});
- await p.document.waitFor(()=>p.$('featured').textContent.includes('所有任务均已完成'));
- assert.equal(p.$('tasks').querySelectorAll('a').length,25);assert.equal(p.$('more').hidden,false);
- await p.$('more').click();assert.equal(p.$('tasks').querySelectorAll('a').length,30);assert.equal(p.$('more').hidden,true);
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));await p.$('tasks').querySelector('summary').click();
+ assert.equal(p.$('tasks').querySelectorAll('a').length,25);
+ await p.$('tasks').querySelectorAll('button').find(button=>button.textContent==='加载更多历史').click();assert.equal(p.$('tasks').querySelectorAll('a').length,30);
  const original=globalThis.fetch;let fail=true;
  t.mock.method(globalThis,'fetch',async(url,options)=>url==='/api/batches/list'&&fail?{ok:false,json:async()=>({error:'合成读取失败'})}:original(url,options));
- await p.$('refresh').click();assert.equal(p.$('tasks').querySelectorAll('a').length,0);assert.match(p.$('error').textContent,/合成读取失败/);
- fail=false;await p.$('refresh').click();assert.equal(p.$('tasks').querySelectorAll('a').length,25);
+ await assert.rejects(p.$('tasks').querySelector('summary').click(),/合成读取失败/);assert.equal(p.$('tasks').querySelectorAll('a').length,0);
+ fail=false;await p.$('tasks').querySelector('summary').click();assert.equal(p.$('tasks').querySelectorAll('a').length,25);
 });
 
 test('未配置和失效设置不能创建任务或列出其他库任务',async t=>{
@@ -110,13 +113,12 @@ test('未配置和失效设置不能创建任务或列出其他库任务',async 
  assert.equal(p.$('settings').hidden,false);
 });
 
-test('日常分析完成且已有可审核建议时，首页和列表显示待审核并仅导航继续审核',async t=>{
+test('有效历史日常分析记录继续提供待审核和原恢复导航',async t=>{
  const ready={...batch('ready','/a','2026-10-05'),phase:'analysis-complete',analysisJob:{status:'complete'},counts:{total:12,classified:11,'needs-information':1}};
  const p=await page(t,{pages:[{records:[ready],nextCursor:null}]});
- await p.document.waitFor(()=>p.$('tasks').querySelectorAll('a').length===2);
- assert.match(p.$('featured').textContent,/待审核/);
- assert.equal(p.$('featured').querySelector('a').textContent,'继续审核');
- assert.equal(p.$('featured').querySelector('a').href,'/?batchId=ready');
+ await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));await p.$('tasks').querySelector('summary').click();
+ assert.match(p.$('tasks').textContent,/待审核/);
+ assert.equal(p.$('tasks').querySelector('a').href,'/?batchId=ready');
  assert.equal(p.$('tasks').querySelector('a').textContent,'继续审核');
  assert.match(p.$('tasks').textContent,/11 份可审核/);
  assert.equal(p.calls.some(call=>/analyze|confirm|apply/.test(call.url)),false);
@@ -124,7 +126,7 @@ test('日常分析完成且已有可审核建议时，首页和列表显示待�
 
 test('同名知识库选项包含可区分位置，独有名称保持简短且切换正确',async t=>{
  const libraries=[{id:'a',libraryPath:'E:/工作/library',valid:true},{id:'b',libraryPath:'E:/个人/library',valid:true},{id:'c',libraryPath:'E:/个人/notes',valid:true}];
- const p=await page(t,{libraries});await p.document.waitFor(()=>p.$('featured').textContent.includes('还没有整理任务'));
+ const p=await page(t,{libraries});await p.document.waitFor(()=>p.$('featured').textContent.includes('未归档'));
  const labels=p.$('library').children.map(n=>n.textContent);
  assert.deepEqual(labels,['工作/library','个人/library','notes']);
  p.$('library').value='b';await p.$('library').dispatchEvent({type:'change'});assert.equal(p.$('library').value,'b');
@@ -137,6 +139,7 @@ test('首页任务与直达任务对库路径大小写、分隔符和尾斜线�
  assert.equal(p.$('error').textContent,'');assert.equal(p.$('library').value,'wiki');
  assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
  await p.$('home-nav').click();
+ await p.$('tasks').querySelector('summary').click();
  assert.equal(p.$('tasks').querySelector('a').href,'/?batchId=direct');
 });
 

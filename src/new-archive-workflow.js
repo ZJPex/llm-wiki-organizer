@@ -43,11 +43,13 @@ export function createNewArchiveWorkflow({store,view,operate,strategy,planning,f
     }catch(error){outcome.reason={code:error.code??'CHECK_FAILED',message:error.message};source.categoryConfirmationError=error.message;source.selected=false;}
     await save();
    }
+   const authorizedCategories=[...new Map(run.items.filter(item=>item.status==='ready').flatMap(item=>batch.slices.find(slice=>slice.sliceId===item.sliceId).newCategories??[]).map(proposal=>[proposal.proposalHash,proposal])).values()];
+   for(const outcome of run.items.filter(item=>item.status==='ready')){const slice=batch.slices.find(slice=>slice.sliceId===outcome.sliceId);if(slice.newCategories?.length)slice.allowedNewCategories=authorizedCategories;}
    run.status='archiving';await save();
    for(const outcome of run.items.filter(item=>item.status==='ready')){
    const slice=batch.slices.find(s=>s.sliceId===outcome.sliceId);slice.status='applying';outcome.status='running';await save();
     try{
-     slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory});await save();
+     slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory,planning});await save();
      if(slice.archiveResult.status!=='complete')throw Object.assign(new Error(slice.archiveResult.error?.message??'归档失败，请检查保留的来源与日志'),{code:slice.archiveResult.error?.code??'ARCHIVE_FAILED'});
      await reconcile(batch,slice);slice.status='complete';outcome.status='succeeded';
     }catch(error){slice.status='failed';outcome.status='failed';outcome.reason={code:error.code??'ARCHIVE_FAILED',message:error.message};slice.error=outcome.reason;

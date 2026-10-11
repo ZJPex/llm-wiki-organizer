@@ -21,7 +21,7 @@ function applicationDetails(application,{detailCursor=0,applicationGroupCursor=d
  return answer;
 }
 export function historyApplicationView(batch,input){return {historyApplication:applicationDetails(applicationSnapshot(batch).historyApplication,input)};}
-export function createHistoryApplication({store,view,checkIdle,fresh,original,strategy,reconcile}){
+export function createHistoryApplication({store,view,checkIdle,fresh,original,strategy,reconcile,planning}){
  const save=async batch=>Object.assign(batch,await store.update(batch.batchId,batch.revision,()=>batch));
  async function readSnapshot(input){
   // 磁盘版本和内存执行权必须同时取样；后续日志读取只能丰富该快照，不能重新判定其生命周期。
@@ -51,7 +51,7 @@ export function createHistoryApplication({store,view,checkIdle,fresh,original,st
   const mappings=slice.historicalRequest.mappings;
   if(report.status!=='complete'||report.phase!=='verified-original'||report.modelAttempts?.length||mappings.some(mapping=>!report.items?.some(item=>item.from===mapping.from&&item.to===mapping.to&&item.status==='succeeded')))batchFail('ORIGINAL_UNCERTAIN',report.error?.message??'原库日志没有证明整份成功，禁止重放；请查询报告或恢复现场');
   job.phase='archiving-new';await save(batch);
-  if(slice.newFiles?.length){slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory});await save(batch);if(slice.archiveResult.status!=='complete')batchFail('ARCHIVE_FAILED',slice.archiveResult.error?.message??'历史已完成，新增归档暂停，请检查现场');}
+  if(slice.newFiles?.length){slice.archiveResult=await strategy(batch).archive({batch,slice,artifactDirectory:slice.artifactDirectory,planning});await save(batch);if(slice.archiveResult.status!=='complete')batchFail('ARCHIVE_FAILED',slice.archiveResult.error?.message??'历史已完成，新增归档暂停，请检查现场');}
   await reconcile(batch,slice);job.status='complete';job.phase='complete';slice.status='complete';batch.phase='batch-progress';
   job.results=batch.sources.map(source=>({sourceId:source.sourceId,identity:source.identity,status:source.status==='succeeded'?'succeeded':job.sourceIds.includes(source.sourceId)?'unverified':'retained',from:validation.plan.items.find(item=>item.sourceId===source.sourceId)?.from??source.currentPath,to:source.targetPath??null}));delete job.error;await save(batch);
   }catch(error){
@@ -59,7 +59,7 @@ export function createHistoryApplication({store,view,checkIdle,fresh,original,st
   // 已有任何不可证明的历史写入会使证据复核失败，此时全部剩余写入停止。
   if(slice.newFiles?.length&&!slice.historicalRequest?.evolutionPlan&&!slice.archiveResult&&!slice.historicalResult?.modelAttempts?.length){
    let untouched=false;try{const proof=await readHistoryEvidence(batch);if(proof.evidenceDigest!==job.evidenceDigest)batchFail('STALE_EVIDENCE','独立新增授权所绑定的验证证据已改变');untouched=true;}catch(proofError){job.independentArchiveError={code:proofError.code,message:proofError.message};}
-   if(untouched){try{slice.archiveResult=await strategy(batch).archive({batch,slice:{...slice,historicalRequest:null,historicalResult:null},artifactDirectory:slice.artifactDirectory});await save(batch);if(slice.archiveResult.status==='complete')await reconcile(batch,{...slice,historicalResult:null});}catch(archiveError){job.independentArchiveError={code:archiveError.code??'ARCHIVE_FAILED',message:archiveError.message};}}
+   if(untouched){try{slice.archiveResult=await strategy(batch).archive({batch,slice:{...slice,historicalRequest:null,historicalResult:null},artifactDirectory:slice.artifactDirectory,planning});await save(batch);if(slice.archiveResult.status==='complete')await reconcile(batch,{...slice,historicalResult:null});}catch(archiveError){job.independentArchiveError={code:archiveError.code??'ARCHIVE_FAILED',message:archiveError.message};}}
   }
   job.error={code:error.code??'HISTORY_APPLY_FAILED',message:error.message};job.status=await exists(job.resultPath)?'needs-recovery':'failed';job.phase='stopped';slice.status='failed';slice.error=job.error;batch.phase='needs-review';job.results=batch.sources.map(source=>({sourceId:source.sourceId,identity:source.identity,status:source.status==='succeeded'?'succeeded':job.sourceIds.includes(source.sourceId)?source.ingestStatus==='new'?'dependency-blocked':'unverified':'retained',reason:job.sourceIds.includes(source.sourceId)?error.message:'未纳入本次范围'}));await save(batch).catch(()=>{});
  }finally{live.delete(batch.batchId);release();}}
