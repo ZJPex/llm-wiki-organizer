@@ -27,7 +27,7 @@ export function staleValidation(batch,reason){
  const validation=batch.flow.historyValidation;if(validation&&validation.status!=='complete'&&batch.flow.historyApplication?.status!=='complete'){validation.status='stale';validation.invalidationReason=reason;stale=true;}
  return stale;
 }
-export async function refreshReviewState(batch,{planning,detectTargets=true,executionCheck=true}={}){
+export async function refreshReviewState(batch,{planning,detectTargets=true,executionCheck=true,checkAnalysisConfig=false}={}){
  if(executionCheck)assertReviewRefreshAllowed(batch);
  const discovery=await discoverSources(batch);if(discovery.flow.busy)batchFail('WRITERS_BUSY','知识库有待处理写入任务，先暂停并处理后检查变化');
  const pending=batch.sources.filter(source=>!terminal(source)),lookup=new Map(discovery.sources.map(source=>[key(source.currentPath),source])),reasons=[],changes=new Map();
@@ -39,6 +39,7 @@ export async function refreshReviewState(batch,{planning,detectTargets=true,exec
   if(source.reviewMissing)mark(source,'SOURCE_RESTORED','来源恢复，需要重新核验正文与关联',{body:true});
   delete source.reviewMissing;
   if(actual.hash!==source.hash||(source.status==='needs-analysis'&&source.analysis)){mark(source,'SOURCE_CHANGED','正文内容变化，仅重新分析这份材料',{body:true});source.hash=actual.hash;treeChanged=true;}
+  else if(checkAnalysisConfig&&source.analysis&&planning?.analysisValidity&&!await planning.analysisValidity({...batch,identity:source.currentIdentity??source.identity})){mark(source,'ANALYSIS_CONFIG_CHANGED','模型配置、分析规则或旧缓存依据失效，需要重新分析；人工名称仍保留',{body:true});treeChanged=true;}
   if(actual.associationHash!==source.associationHash||actual.ingestStatus!==source.ingestStatus){mark(source,'ASSOCIATION_CHANGED','摄取身份、历史页面或关联记录变化；保留未变正文分析，重新审核迁移范围');Object.assign(source,{associationHash:actual.associationHash,ingestStatus:actual.ingestStatus,rawIdentity:actual.rawIdentity,skipReason:actual.skipReason});}
  }
  if(batch.mode==='restructure')for(const actual of discovery.sources)if(!batch.sources.some(source=>key(source.currentPath)===key(actual.currentPath))){const source={...actual,sourceId:randomUUID(),selected:false};batch.sources.push(source);pending.push(source);mark(source,'SOURCE_ADDED','完整 Raw 范围增加材料，须重新检查全树归属',{body:true});treeChanged=true;}

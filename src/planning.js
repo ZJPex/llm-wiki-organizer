@@ -8,8 +8,9 @@ import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
+import {analysisVersion,sameAnalysisVersion} from './analysis-version.js';
 import {themeTags} from './classification-result.js';
-import {createModelConcurrency,modelContext} from './model-concurrency.js';
+import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
@@ -52,7 +53,7 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
   const modelConcurrency=createModelConcurrency({stateDirectory});
-  const modelGenerate=generate;generate=(...args)=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(...args));
+  const modelGenerate=generate;generate=(config,request)=>withModelContext({...modelContext(),priority:request.stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(config,request)));
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
@@ -87,41 +88,66 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(pending.sourceFile,pending.nextSource);if(pending.targetFile!==pending.sourceFile)await persist(pending.targetFile,pending.nextTarget);
       await persist(transaction,{...pending,status:'complete'});return {status:'complete'};
     }),
-    analyze: input => once(JSON.stringify([input.sourceRoot,input.identity]),async () => {
-      const { sourceRoot, identity } = input;
-      const file = await sourceFile(sourceRoot, identity);
-      const text = await readFile(file, 'utf8');
-      const sourceHash = hash(text);
+    analysisValidity: async input=>{
+      const saved=await serial(()=>state(input.sourceRoot,input.libraryPath)),entry=saved.data.entries[input.identity];
+      if(!entry||entry.hash!==hash(await readFile(await sourceFile(input.sourceRoot,input.identity),'utf8')))return false;
+      const config=['body','navigation'].includes(entry.kind)?await readModelConfig(input):null;
+      return sameAnalysisVersion(entry.analysisVersion,analysisVersion(config));
+    },
+    analyze: async input => {
+      const {sourceRoot,identity}=input,file=await sourceFile(sourceRoot,identity),text=await readFile(file,'utf8'),sourceHash=hash(text);
+      const view=analysisView(text),kind=kindOf(view),config=['body','navigation'].includes(kind)?await readModelConfig(input):null,version=analysisVersion(config);
+      return once(JSON.stringify([file,sourceHash,version,input.reanalyze===true]),async()=>{
       const saved = await state(sourceRoot, input.libraryPath);
       const prior = saved.data.entries[identity];
-      if (prior?.hash === sourceHash && !input.reanalyze) return { ...prior, reused: true };
-      const view = analysisView(text);
-      const kind = kindOf(view);
+      if(prior?.hash===sourceHash&&sameAnalysisVersion(prior.analysisVersion,version)&&!input.reanalyze)return {...prior,reused:true};
       const seriesPattern = /第[零一二三四五六七八九十百千0-9]+[章节课讲]|(?:chapter|lesson|part)\s*\d+/gi;
       const heading = view.split('\n').find(line => /^#{1,6}\s/.test(line)) ?? '';
       const identityHints = [...new Set((path.basename(identity) + ' ' + heading).match(seriesPattern) ?? [])];
-      const entry = { identity, hash: sourceHash, kind, identityHints, segments: [], suggestion: null, confirmedName: prior?.confirmedName ?? null, reviewRequired: true };
+      const entry = { identity, hash: sourceHash, analysisVersion:version, kind, identityHints, segments: [], suggestion: null, confirmedName: prior?.confirmedName ?? null, reviewRequired: true };
       if (['body', 'navigation'].includes(kind)) {
-        const config = await readModelConfig(input);
+        const checkpoint=await serial(async()=>{
+          const latest=await state(sourceRoot,input.libraryPath);latest.data.checkpoints??={};let current=latest.data.checkpoints[identity];
+          if(current?.schemaVersion!==1||!current.results||current.sourceHash!==sourceHash||!sameAnalysisVersion(current.analysisVersion,version)||input.reanalyze){current={schemaVersion:1,sourceHash,analysisVersion:version,generation:randomUUID(),results:{}};latest.data.checkpoints[identity]=current;await persist(latest.file,latest.data);}
+          return structuredClone(current);
+        });
+        const stillCurrent=async()=>{
+          if(hash(await readFile(file,'utf8'))!==sourceHash)throw new Error('分析过程中源文件变化，请重试');
+          if(!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),version))throw new Error('分析过程中模型配置变化，请重试');
+        };
+        const cachedResult=(key,content)=>{const cached=checkpoint.results[key];if(cached?.inputHash!==hash(content))return;try{return checkedAnalysis(cached.result,content);}catch{return;}};
+        const cachedRequest=async(key,request,content)=>{
+          const inputHash=hash(content),cached=cachedResult(key,content);
+          if(cached){await stillCurrent();return cached;}
+          const result=await generateCheckedAnalysis(generate,config,request,content);
+          await serial(async()=>{
+            await stillCurrent();const latest=await state(sourceRoot,input.libraryPath),current=latest.data.checkpoints?.[identity];
+            if(current?.generation!==checkpoint.generation)throw new Error('已有更新的分析，旧结果不再保存');
+            current.results[key]={inputHash,result};await persist(latest.file,latest.data);
+          });return result;
+        };
+        entry.checkpointGeneration=checkpoint.generation;
         const size = Math.max(256, Math.min(8000, Math.floor((config.maxContextSize ?? 16000) / 4)));
-        let completed=0;const totalSteps=Math.ceil(view.length/size);
-        await input.onProgress?.({stage:'segment',step:0,completed:0,totalSteps});
+        const totalSteps=Math.ceil(view.length/size),reusedSteps=Array.from({length:totalSteps},(_,index)=>{const start=index*size;return !!cachedResult('segment:'+start+':'+Math.min(start+size,view.length),view.slice(start,start+size));}).filter(Boolean).length;
+        let completed=reusedSteps;
+        await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps,reusedSteps});
         entry.segments=await parallel(Array.from({length:totalSteps},(_,index)=>async()=>{
           const start=index*size,content=view.slice(start,start+size);
-          const result={start,end:Math.min(start+size,view.length),...await generateCheckedAnalysis(generate,config,{stage:'segment',content,identity},content)};
-          completed++;await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps});return result;
+          const key='segment:'+start+':'+Math.min(start+size,view.length),reused=!!cachedResult(key,content);
+          const result={start,end:Math.min(start+size,view.length),...await cachedRequest(key,{stage:'segment',content,identity},content)};
+          if(!reused)completed++;await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps,reusedSteps});return result;
         }));
         // 分层归并使每一段均参与，避免把超长全文再次塞入一个上下文。
         let summaries = entry.segments, round = 0;
         while (summaries.length > 1) {
           round++;
-          let completed=0;const totalSteps=Math.ceil(summaries.length/4);
-          await input.onProgress?.({stage:'synthesis',round,step:0,completed:0,totalSteps});
-          const next=await parallel(Array.from({length:totalSteps},(_,index)=>async()=>{
-            const group=summaries.slice(index*4,index*4+4);
-            const content=group.map(s=>`${s.summary}\n${s.evidence.join('\n')}`).join('\n');
-            const result=await generateCheckedAnalysis(generate,config,{stage:'synthesis',content,identity},content);
-            completed++;await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps});return result;
+          const totalSteps=Math.ceil(summaries.length/4),contents=Array.from({length:totalSteps},(_,index)=>summaries.slice(index*4,index*4+4).map(s=>`${s.summary}\n${s.evidence.join('\n')}`).join('\n'));
+          const reusedSteps=contents.filter((content,index)=>cachedResult('synthesis:'+round+':'+index,content)).length;let completed=reusedSteps;
+          await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps,reusedSteps});
+          const next=await parallel(contents.map((content,index)=>async()=>{
+            const reused=!!cachedResult('synthesis:'+round+':'+index,content);
+            const result=await cachedRequest('synthesis:'+round+':'+index,{stage:'synthesis',content,identity},content);
+            if(!reused)completed++;await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps,reusedSteps});return result;
           }));
           summaries = next;
         }
@@ -136,11 +162,15 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       return serial(async()=>{
         const latest=await state(sourceRoot,input.libraryPath);
         if(hash(await readFile(file,'utf8'))!==sourceHash)throw new Error('分析过程中源文件变化，请重试');
+        if(config&&!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),version))throw new Error('分析过程中模型配置变化，请重试');
+        if(entry.checkpointGeneration&&latest.data.checkpoints?.[identity]?.generation!==entry.checkpointGeneration)throw new Error('已有更新的分析，旧结果不再保存');
+        delete entry.checkpointGeneration;
         const current=latest.data.entries[identity];
         if(current?.confirmedName){entry.confirmedName=current.confirmedName;entry.suggestion=null;}
         latest.data.entries[identity]=entry;await persist(latest.file,latest.data);return entry;
       });
-    }),
+      });
+    },
     confirm: input => serial(async () => {
       const { sourceRoot, identity, name } = input;
       validateName(name);
@@ -171,11 +201,13 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
+      if(config&&!sameAnalysisVersion(entry.analysisVersion,analysisVersion(config)))throw new Error('全文分析依据已失效，请先重新分析');
       const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
       return serial(async()=>{
         const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
         if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
+        if(config&&(!sameAnalysisVersion(current.analysisVersion,analysisVersion(config))||!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),analysisVersion(config))))throw new Error('分类规划期间模型配置变化，请重新分析');
         if(current.classification?.status==='confirmed')return current;
         current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
         current.tags=themeTags(recommendation.tags);
