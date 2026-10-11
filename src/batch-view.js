@@ -1,6 +1,7 @@
 import {sourceDirectoryDependency} from './directory-dependencies.js';
 import {buildBatchReport} from './batch-report.js';
 import {canConfirmRecommendedCategory} from './category-confirmation.js';
+import {suggestionProgress} from './classification-result.js';
 const pick=(value,names)=>Object.fromEntries(names.filter(name=>value?.[name]!==undefined).map(name=>[name,value[name]]));
 const brief=value=>typeof value==='string'?value.slice(0,2000):value;
 const itemFields=['id','sourceId','identity','from','to','path','finalPath','kind','before','after','targetBefore','targetAfter','hash','status','expectedHash','passive','changeType','sourcePath','oldPath','newPath','projectId','at','code','message'];
@@ -27,7 +28,7 @@ export function batchView(batch,{cursor=0,limit=25,treeCursor=0,detailCursor=0,s
   const entry=source.analysis,analysis=entry?.analysis??entry,node=batch.flow.tree?.nodes.find(node=>node.members.includes(source.sourceId));
   return {directoryDependency:sourceDirectoryDependency(batch,source),...pick(source,sourceFields),proposedNodeId:node?.nodeId,proposedCategory:node?.category,
    analysis:analysis?{kind:source.kind??entry.kind,summary:brief(analysis.summary),suggestion:source.suggestion??entry.suggestion,confirmedName:source.confirmedName??entry.confirmedName,identityHints:page(entry.identityHints),warning:brief(entry.warning),evidence:evidence(analysis.evidence),uncertain:analysis.uncertain}:undefined,
-   classification:source.classification?{...pick(source.classification,['status','category','finalPath']),reason:brief(source.classification.reason),evidence:evidence(source.classification.evidence),options:page(source.classification.options),considered:page(source.classification.considered)}:undefined,
+   tags:source.tags??source.classification?.tags??[],classification:source.classification?{...pick(source.classification,['status','category','finalPath','decision','tags']),reason:brief(source.classification.reason),evidence:evidence(source.classification.evidence),options:page(source.classification.options),considered:page(source.classification.considered)}:undefined,
    evolution:source.evolution?{status:source.evolution.status,reason:brief(source.evolution.reason),operations:page(source.evolution.operations,operation)}:undefined};
  });
  const flow=pick(batch.flow,['busy','stage','historyBeforeNew']);
@@ -49,5 +50,5 @@ export function batchView(batch,{cursor=0,limit=25,treeCursor=0,detailCursor=0,s
  const classificationCompleted=batch.sources.filter(s=>['classified','evolution-review','reviewed','succeeded'].includes(s.status)&&s.classification).length;
  const classificationProgress={total:classificationRemaining+classificationCompleted,remaining:classificationRemaining,completed:classificationCompleted,skipped:batch.sources.length-classificationRemaining-classificationCompleted,failed:counts['classification-failed']??0};
  const report=buildBatchReport(batch,{limit:1,isActive});delete report.items;delete report.evidence;
- return {report,...pick(batch,batchFields),error:errorView(batch.error),flow,sources,slices,counts,classificationProgress,confirmableCategoryCount,analysisProgress:{total:batch.sources.length,remaining:batch.sources.filter(source=>['pending','analysis-failed','needs-analysis'].includes(source.status)||(source.status==='blocked'&&!source.analysis)).length,failed:counts['analysis-failed']??0},events,cursor:offset,treeCursor:treeOffset,detailCursor:detailOffset,pageSize:size,nextCursor:offset+size<batch.sources.length?offset+size:null,detailNextCursor:detailOffset+size<detailCount?detailOffset+size:null,detailCount,sliceCursor:sliceOffset,sliceNextCursor:sliceOffset+sliceSize<batch.slices.length?sliceOffset+sliceSize:null,sliceCount:batch.slices.length,interrupted:batch.phase?.endsWith('-running')&&!isActive};
+ return {report,suggestionProgress:suggestionProgress(batch.sources),...pick(batch,batchFields),error:errorView(batch.error),flow,sources,slices,counts,classificationProgress,confirmableCategoryCount,analysisProgress:{total:batch.sources.length,remaining:batch.sources.filter(source=>['pending','analysis-failed','needs-analysis'].includes(source.status)||(source.status==='blocked'&&!source.analysis)).length,failed:counts['analysis-failed']??0},events,cursor:offset,treeCursor:treeOffset,detailCursor:detailOffset,pageSize:size,nextCursor:offset+size<batch.sources.length?offset+size:null,detailNextCursor:detailOffset+size<detailCount?detailOffset+size:null,detailCount,sliceCursor:sliceOffset,sliceNextCursor:sliceOffset+sliceSize<batch.slices.length?sliceOffset+sliceSize:null,sliceCount:batch.slices.length,interrupted:batch.phase?.endsWith('-running')&&!isActive};
 }

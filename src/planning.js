@@ -8,6 +8,7 @@ import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
+import {themeTags} from './classification-result.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -160,6 +161,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
       entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName ?? entry.suggestion ?? path.basename(entry.identity)) };
+      entry.tags=themeTags(recommendation.tags);
       delete entry.frozenPlan;
       await persist(saved.file, saved.data);
       return entry;
@@ -177,8 +179,9 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
       const target = await finalTarget(catalog, input.category, name, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
-      Object.assign(entry, {confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,category:input.category,finalPath:target,status:'confirmed'}});
+      const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),

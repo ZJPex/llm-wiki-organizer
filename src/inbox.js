@@ -110,7 +110,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
           const named=await planning.confirm({...base,name:input.name});
           return {sourcePatch:{...named,...result.sourcePatch,manuallyEdited:input.manuallyEdited===true}};
         }
-        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category});
+        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category,tags:input.tags});
         return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true,manuallyEdited:input.manuallyEdited===true}};
       }
       if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
