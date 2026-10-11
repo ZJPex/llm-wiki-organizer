@@ -1,4 +1,4 @@
-import { readFile, readdir, realpath, lstat, mkdir, writeFile, rename } from 'node:fs/promises';
+import { readFile, readdir, realpath, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,6 +9,8 @@ import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
 import {themeTags} from './classification-result.js';
+import {createModelConcurrency,modelContext} from './model-concurrency.js';
+import {atomicRename} from './atomic-rename.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -49,6 +51,8 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 }
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
+  const modelConcurrency=createModelConcurrency({stateDirectory});
+  const modelGenerate=generate;generate=(...args)=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(...args));
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
@@ -61,8 +65,12 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
     const file = path.join(location, `${hash(canonical)}.json`);
     try { return { file, data: JSON.parse(await readFile(file, 'utf8')) }; } catch (e) { if (e.code !== 'ENOENT') throw e; return { file, data: { schemaVersion: 1, entries: {} } }; }
   }
-  async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await rename(temporary, file); }
+  async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await atomicRename(temporary, file); }
+  const inFlight=new Map();
+  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=fn().finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
+  const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
+    modelConcurrency,
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -79,7 +87,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(pending.sourceFile,pending.nextSource);if(pending.targetFile!==pending.sourceFile)await persist(pending.targetFile,pending.nextTarget);
       await persist(transaction,{...pending,status:'complete'});return {status:'complete'};
     }),
-    analyze: input => serial(async () => {
+    analyze: input => once(JSON.stringify([input.sourceRoot,input.identity]),async () => {
       const { sourceRoot, identity } = input;
       const file = await sourceFile(sourceRoot, identity);
       const text = await readFile(file, 'utf8');
@@ -96,24 +104,25 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (['body', 'navigation'].includes(kind)) {
         const config = await readModelConfig(input);
         const size = Math.max(256, Math.min(8000, Math.floor((config.maxContextSize ?? 16000) / 4)));
-        for (let start = 0; start < view.length; start += size) {
-          await input.onProgress?.({stage:'segment',step:Math.floor(start/size)+1,totalSteps:Math.ceil(view.length/size)});
-          const content = view.slice(start, start + size);
-          entry.segments.push({ start, end: Math.min(start + size, view.length), ...await generateCheckedAnalysis(generate, config, { stage: 'segment', content, identity }, content) });
-        }
+        let completed=0;const totalSteps=Math.ceil(view.length/size);
+        await input.onProgress?.({stage:'segment',step:0,completed:0,totalSteps});
+        entry.segments=await parallel(Array.from({length:totalSteps},(_,index)=>async()=>{
+          const start=index*size,content=view.slice(start,start+size);
+          const result={start,end:Math.min(start+size,view.length),...await generateCheckedAnalysis(generate,config,{stage:'segment',content,identity},content)};
+          completed++;await input.onProgress?.({stage:'segment',step:completed,completed,totalSteps});return result;
+        }));
         // 分层归并使每一段均参与，避免把超长全文再次塞入一个上下文。
         let summaries = entry.segments, round = 0;
         while (summaries.length > 1) {
           round++;
-          const next = [];
-          for (let offset = 0; offset < summaries.length; offset += 4) {
-            await input.onProgress?.({stage:'synthesis',round,step:Math.floor(offset/4)+1,totalSteps:Math.ceil(summaries.length/4)});
-            const group = summaries.slice(offset, offset + 4);
-            const content = group.map(s => `${s.summary}\n${s.evidence.join('\n')}`).join('\n');
-            const result = await generateCheckedAnalysis(generate, config, { stage: 'synthesis', content, identity }, content);
-            // 全文主题由汇总独立判断，局部歧义不作为全篇否决票。
-            next.push(result);
-          }
+          let completed=0;const totalSteps=Math.ceil(summaries.length/4);
+          await input.onProgress?.({stage:'synthesis',round,step:0,completed:0,totalSteps});
+          const next=await parallel(Array.from({length:totalSteps},(_,index)=>async()=>{
+            const group=summaries.slice(index*4,index*4+4);
+            const content=group.map(s=>`${s.summary}\n${s.evidence.join('\n')}`).join('\n');
+            const result=await generateCheckedAnalysis(generate,config,{stage:'synthesis',content,identity},content);
+            completed++;await input.onProgress?.({stage:'synthesis',round,step:completed,completed,totalSteps});return result;
+          }));
           summaries = next;
         }
         entry.analysis = summaries[0];
@@ -124,9 +133,13 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       }
       if (!entry.suggestion && !entry.confirmedName) entry.warning ??= '证据不足或主题不明确，请人工处理；源文件及关联保持原样';
       if (hash(await readFile(file, 'utf8')) !== sourceHash) throw new Error('分析过程中源文件变化，请重试');
-      saved.data.entries[identity] = entry;
-      await persist(saved.file, saved.data);
-      return entry;
+      return serial(async()=>{
+        const latest=await state(sourceRoot,input.libraryPath);
+        if(hash(await readFile(file,'utf8'))!==sourceHash)throw new Error('分析过程中源文件变化，请重试');
+        const current=latest.data.entries[identity];
+        if(current?.confirmedName){entry.confirmedName=current.confirmedName;entry.suggestion=null;}
+        latest.data.entries[identity]=entry;await persist(latest.file,latest.data);return entry;
+      });
     }),
     confirm: input => serial(async () => {
       const { sourceRoot, identity, name } = input;
@@ -149,7 +162,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(saved.file, saved.data);
       return entry;
     }),
-    classify: input => serial(async () => {
+    classify: input => once(JSON.stringify(['classification',input.sourceRoot,input.identity]),async () => {
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
@@ -160,11 +173,14 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
       if (entry.hash !== hash(await readFile(file, 'utf8')) || (await categoryCatalog(input.categoryRoot)).hash !== catalog.hash) throw new Error('分类规划期间基线变化');
-      entry.classification = { ...recommendation, catalogRoot: catalog.root, catalogHash: catalog.hash, options: catalog.categories.map(c => c.path), finalPath: recommendation.category === null ? null : path.join(catalog.root, recommendation.category, entry.confirmedName ?? entry.suggestion ?? path.basename(entry.identity)) };
-      entry.tags=themeTags(recommendation.tags);
-      delete entry.frozenPlan;
-      await persist(saved.file, saved.data);
-      return entry;
+      return serial(async()=>{
+        const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
+        if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
+        if(current.classification?.status==='confirmed')return current;
+        current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.tags=themeTags(recommendation.tags);
+        delete current.frozenPlan;await persist(latest.file,latest.data);return current;
+      });
     }),
     // 名称与分类在全部校验通过后一次保存，建议名不冒充已确认名。
     confirmPlan: input => serial(async () => {
@@ -201,7 +217,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       await persist(saved.file, saved.data);
       return entry;
     }),
-    evolve: input => serial(async () => {
+    evolve: input => once(JSON.stringify(['evolution',input.sourceRoot,input.identity]),async () => {
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];
@@ -210,9 +226,12 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       const proposal = await proposeEvolution({ entry, root: input.categoryRoot, startCategory: input.startCategory, generate, config });
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('规划期间来源变化');
-      saved.data.evolution = { ...proposal, identity: entry.identity, sourceHash: entry.hash, status: 'needs-review' };
-      await persist(saved.file, saved.data);
-      return saved.data.evolution;
+      return serial(async()=>{
+        const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
+        if(!current||current.hash!==entry.hash||current.confirmedName!==entry.confirmedName||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==proposal.catalog.hash||(await inventory(input.categoryRoot)).hash!==proposal.baseline.hash)throw new Error('规划期间基线变化');
+        if(JSON.stringify(latest.data.evolution)!==JSON.stringify(saved.data.evolution))throw new Error('已有更新的目录方案，请重新读取');
+        latest.data.evolution={...proposal,identity:entry.identity,sourceHash:entry.hash,status:'needs-review'};await persist(latest.file,latest.data);return latest.data.evolution;
+      });
     }),
     confirmEvolution: input => serial(async () => {
       const saved = await state(input.sourceRoot, input.libraryPath);

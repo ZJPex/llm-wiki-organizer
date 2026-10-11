@@ -1,3 +1,4 @@
+import {modelConcurrencyControls} from './model-concurrency-ui.js';
 import {classifyAll} from './classify-all.js';
 import {backgroundAnalysis} from './background-analysis.js';
 import {withTreeProgress} from './tree-progress.js';
@@ -8,6 +9,7 @@ const analyzeButton=document.querySelector('#analyze');
 analyzeButton.textContent='一键分析全部';
 const pauseButton=document.createElement('button');pauseButton.textContent='暂停分析';pauseButton.hidden=true;analyzeButton.after(pauseButton);
 const analysisMessage=document.createElement('p');analysisMessage.setAttribute('role','status');pauseButton.after(analysisMessage);
+const modelProgress=document.createElement('div');analysisMessage.after(modelProgress);const modelControls=modelConcurrencyControls(modelProgress);
 const analysis=backgroundAnalysis({getBatch:()=>batch,request:api,update:value=>{batch=value;render();},onError:error=>{$('#error').textContent=error.message;}});
 pauseButton.onclick=()=>analysis.pause().catch(error=>{$('#error').textContent=error.message;});
 async function analyzeRequest(action,input){
@@ -36,6 +38,7 @@ async function refresh(){if(!batch)return;const value=await api('get',{batchId:b
 async function run(action){if(busy)return;busy=true;$('#error').textContent='';document.querySelectorAll('button').forEach(button=>button.disabled=true);try{await action();}catch(error){$('#error').textContent=error.message;}finally{busy=false;if(batch)await refresh().catch(error=>{$('#error').textContent=error.message;render();});else document.querySelectorAll('form button').forEach(button=>button.disabled=false);}}
 async function review(source,action,patch={}){await api('reviewItem',{batchId:batch.batchId,revision:batch.revision,sourceId:source.sourceId,action,...patch});$('#approved').checked=false;slice=null;}
 function render(){
+ modelControls.update(batch);
  $('#progress').replaceChildren();p($('#progress'),`批次 ${batch.batchId} · 修订 ${batch.revision} · ${statusName(batch.status??batch.phase)}`);if(batch.counts)p($('#progress'),Object.entries(batch.counts).map(([key,value])=>`${statusName(key)} ${value}`).join('，'));if(batch.error??batch.lastError)p($('#progress'),`最近错误：${(batch.error??batch.lastError).message}`);
  const progress=batch.analysisProgress,current=batch.flow?.analysisCurrent;
  if(progress)p($('#progress'),`已处理 ${progress.total-progress.remaining} / ${progress.total} 份；待人工判断 ${batch.counts?.['needs-information']??0} 份；失败 ${progress.failed} 份。`);

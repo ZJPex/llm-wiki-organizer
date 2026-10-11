@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {modelContext} from './model-concurrency.js';
 import {readFile,writeFile,mkdir,rename,lstat,readdir,copyFile,unlink} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
@@ -87,7 +88,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       await checkedFile(source.currentPath,source.hash);
       let entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
       const reliable=entry.analysis&&!entry.analysis.uncertain&&['body','navigation'].includes(entry.kind);
-      if(reliable&&!entry.classification&&planning.classify)entry=await planning.classify({...inputFor(batch,source),onProgress});
+      if(reliable&&!entry.classification&&planning.classify&&!modelContext()?.shouldPause?.())entry=await planning.classify({...inputFor(batch,source),onProgress});
       return {...entry,status:reliable?(entry.classification?'classified':'analyzed'):'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
     },
     async review({batch,source,input,planning,onProgress}) {

@@ -1,0 +1,27 @@
+{
+  "scope": "合成模型延迟验证，不代表真实供应商性能",
+  "results": [
+    {
+      "limit": 1,
+      "durationMs": 668,
+      "peak": 1,
+      "calls": 14,
+      "segments": 10,
+      "synthesis": 4,
+      "coverage": true,
+      "model": "controlled-latency",
+      "delayMs": 40
+    },
+    {
+      "limit": 3,
+      "durationMs": 290,
+      "peak": 3,
+      "calls": 14,
+      "segments": 10,
+      "synthesis": 4,
+      "coverage": true,
+      "model": "controlled-latency",
+      "delayMs": 40
+    }
+  ]
+}
