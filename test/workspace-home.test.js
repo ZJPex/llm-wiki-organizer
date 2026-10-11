@@ -2,22 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 
-async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task,batchesUnavailable=false}={}){
+async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task,batchesUnavailable=false,listGate}={}){
  const document=createInboxDocument();document.body.replaceChildren();
  const add=(tag,id,parent=document.body)=>{const node=document.createElement(tag);node.id=id;parent.append(node);return node;};
  for(const id of ['title','notice','error','categories','featured','tasks','category-description','files','page-label'])add('div',id);
  for(const id of ['home','browse','settings','task-workspace','category-panel'])add('section',id);
  for(const id of ['home-nav','browse-nav','settings-nav','new-library','refresh','more','files-more'])add('button',id);
- add('select','library');const form=add('form','start');const mode=add('select','mode',form);for(const value of ['inbox','restructure']){const option=add('option','',mode);option.value=value;}add('button','',form).textContent='新建整理任务';add('form','settings-form');
+ add('select','library');const form=add('form','start');const mode=add('select','mode',form);for(const value of ['inbox','restructure']){const option=add('option','',mode);option.value=value;}add('button','',form).textContent='新建整理任务';const settingsForm=add('form','settings-form');for(const name of ['libraryPath','sourceRoot','wikiSourcePath','configPath','artifactRoot'])add('input','',settingsForm).name=name;
  // 复用轻量页面夹具，补充真实页面使用的原生方法。
  const original=document.createElement;document.createElement=tag=>{const node=original(tag);node.removeAttribute=name=>node.attributes.delete(name);return node;};
  form.removeAttribute=name=>form.attributes.delete(name);
  const location={search,href:''},calls=[];
- for(const [key,value] of Object.entries({document,location,sessionStorage:{getItem:()=>null,setItem:()=>{}}})){const old=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});t.after(()=>{if(old)Object.defineProperty(globalThis,key,old);else delete globalThis[key];});}
+ for(const [key,value] of Object.entries({document,location,FormData:document.FormData,sessionStorage:{getItem:()=>null,setItem:()=>{}}})){const old=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});t.after(()=>{if(old)Object.defineProperty(globalThis,key,old);else delete globalThis[key];});}
  t.mock.method(globalThis,'setInterval',()=>0);
  t.mock.method(globalThis,'fetch',async(url,options)=>{const input=JSON.parse(options?.body??'{}');calls.push({url,input});let value;
  if(url==='/api/session')value={token:'fixed'};
- else if(url==='/api/workspace/list')value={libraries};
+ else if(url==='/api/workspace/list'){if(listGate)await listGate;value={libraries};}
+ else if(url==='/api/workspace/save')value={id:input.id??'new',valid:true};
  else if(url==='/api/workspace/categories')value={categories:[],files:[],total:0,nextCursor:null};
  else if(url==='/api/batches/get')value=task;
  else if(url==='/api/batches/list'){if(batchesUnavailable)throw new Error('合成批次读取失败');value=pages[input.cursor??0];}
@@ -154,4 +155,47 @@ test('批次读取失败不阻挡直达分类并显示真实分类空态',async 
  assert.equal(p.$('browse').hidden,false);assert.equal(p.$('home').hidden,true);assert.match(p.$('files').textContent,/此分类暂无 Markdown 材料/);
  assert.equal(p.$('error').textContent,'');assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
  assert.equal(p.calls.some(call=>call.url==='/api/workspace/categories'&&call.input.id==='a'),true);
+});
+
+test('初次库请求尚未返回时打开设置，迟到的初始化不会切回任务页',async t=>{
+ let release;const listGate=new Promise(resolve=>release=resolve);
+ const p=await page(t,{listGate});
+ await p.document.waitFor(()=>p.calls.some(call=>call.url==='/api/workspace/list'));
+ await p.$('settings-nav').click();
+ assert.equal(p.$('title').textContent,'知识库设置');
+ release();await p.document.waitFor(()=>p.$('notice').textContent==='● 设置已校验');
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(p.$('title').textContent,'知识库设置');assert.equal(p.$('settings').hidden,false);
+ assert.equal(p.$('home').hidden,true);assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
+});
+
+test('加载期间打开现有设置并输入草稿，迟到环境只补未编辑字段并保留编辑身份',async t=>{
+ let release;const listGate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const record={id:'a',revision:7,libraryPath:'/existing',sourceRoot:'/existing-inbox',valid:true};
+ const p=await page(t,{libraries:[record],listGate});await p.$('settings-nav').click();
+ const inputs=p.$('settings-form').querySelectorAll('input'),library=inputs.find(n=>n.name==='libraryPath');library.value='/人工草稿';await library.dispatchEvent({type:'input'});
+ release();await p.document.waitFor(()=>p.$('library').value==='a');
+ assert.equal(library.value,'/人工草稿');assert.equal(inputs.find(n=>n.name==='sourceRoot').value,'/existing-inbox');
+ await p.$('settings-form').requestSubmit();const saved=p.calls.find(c=>c.url==='/api/workspace/save').input;
+ assert.equal(saved.id,'a');assert.equal(saved.revision,7);assert.equal(saved.libraryPath,'/人工草稿');
+});
+
+test('加载期间选择新增知识库，迟到环境不能填入旧设置或把新增变成编辑',async t=>{
+ let release;const listGate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const p=await page(t,{libraries:[{id:'old',revision:3,libraryPath:'/old',sourceRoot:'/old-inbox',valid:true}],listGate});
+ await p.$('settings-nav').click();await p.$('new-library').click();
+ const inputs=p.$('settings-form').querySelectorAll('input'),library=inputs.find(n=>n.name==='libraryPath');library.value='/new-draft';await library.dispatchEvent({type:'input'});
+ release();await p.document.waitFor(()=>p.$('library').value==='old');
+ assert.equal(library.value,'/new-draft');assert.equal(inputs.find(n=>n.name==='sourceRoot').value,'');
+ await p.$('settings-form').requestSubmit();const saved=p.calls.find(c=>c.url==='/api/workspace/save').input;
+ assert.equal(saved.id,undefined);assert.equal(saved.revision,undefined);assert.equal(saved.libraryPath,'/new-draft');
+});
+
+test('加载期间打开设置但未编辑时仍补齐真实设置及当前记录身份',async t=>{
+ let release;const listGate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const p=await page(t,{libraries:[{id:'a',revision:9,libraryPath:'/a',sourceRoot:'/inbox',valid:true}],listGate});
+ await p.$('settings-nav').click();release();await p.document.waitFor(()=>p.$('library').value==='a');
+ assert.equal(p.$('settings-form').querySelectorAll('input').find(n=>n.name==='sourceRoot').value,'/inbox');
+ await p.$('settings-form').requestSubmit();const saved=p.calls.find(c=>c.url==='/api/workspace/save').input;
+ assert.equal(saved.id,'a');assert.equal(saved.revision,9);
 });

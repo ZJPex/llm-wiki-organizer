@@ -8,9 +8,22 @@ const pages = {
   '/inbox': ['日常整理', 'home'], '/restructure': ['首次重构', 'home'],
 };
 
-export function renderPageShell(html, route) {
-  const [title, current] = pages[route] ?? pages['/'];
+export function renderPageShell(html, requestTarget) {
+  const {pathname:route,searchParams}=new URL(requestTarget,'http://organizer.local');
+  let [title, current] = pages[route] ?? pages['/'];
   const workspace = route === '/';
+  if(workspace){
+    const batchId=searchParams.get('batchId'),view=searchParams.get('view');
+    const initial=batchId?['集中审核','home']:view==='settings'?['知识库设置','settings']:view==='browse'?['分类浏览','browse']:null;
+    if(initial){
+      [title,current]=initial;
+      // 首帧只呈现目标页标题和加载状态，避免首页在异步初始化前闪现。
+      html=html.replace('<h1 id="title">整理任务</h1>',`<h1 id="title">${title}</h1>`)
+        .replace('<p id="home-intro">','<p id="home-intro" hidden>')
+        .replace('<form id="start">','<form id="start" hidden>')
+        .replace('<section id="home"','<section id="home" hidden');
+    }
+  }
   const item = (key, label, symbol, url) => {
     const active = key === current ? ' aria-current="page"' : '';
     const content = icon(symbol) + label;

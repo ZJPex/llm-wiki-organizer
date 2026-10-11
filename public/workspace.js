@@ -4,7 +4,7 @@ import {mountRestructureWorkspace} from './restructure-workspace.js';
 import {mountReviewWorkspace} from './review-workspace.js';
 import {element,requestBatch} from './batch-ui.js';
 const $=selector=>document.querySelector(selector);
-let libraries=[],selected=null,editing=null,busy=false,contextVersion=0,reviewWorkspace=null;
+let libraries=[],selected=null,editing=null,busy=false,contextVersion=0,reviewWorkspace=null,navigationVersion=0;
 async function api(action,input={}) {
  const {token}=await(await fetch('/api/session')).json();
  const response=await fetch('/api/workspace/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)});
@@ -12,13 +12,24 @@ async function api(action,input={}) {
 }
 async function run(action){if(busy)return;const version=contextVersion;busy=true;$('#error').textContent='';try{await action(version);}catch(error){if(version===contextVersion)$('#error').textContent=error.message;}finally{if(version===contextVersion)busy=false;}}
 function show(name,title){
+ navigationVersion++;
  if(name!=='browse')categoryBrowser.clear();
  for(const id of ['home','browse','settings','task-workspace'])$('#'+id).hidden=id!==name;
  $('#title').textContent=title;$('#start').hidden=name!=='home';if($('#home-intro'))$('#home-intro').hidden=name!=='home';
  $('#page-label').textContent=({home:'任务首页',browse:'分类浏览',settings:'知识库设置','task-workspace':'集中审核'})[name];
  for(const [id,page] of [['home-nav','home'],['browse-nav','browse'],['settings-nav','settings']])$('#'+id).setAttribute('aria-current',name===page||(name==='task-workspace'&&page==='home')?'page':'false');
 }
-function settings(record=selected){editing=record;for(const input of $('#settings-form').querySelectorAll('input'))input.value=record?.[input.name]??'';show('settings','知识库设置');}
+let newLibraryIntent=false;const editedSettingsFields=new Set();
+function settings(record=selected){
+ newLibraryIntent=arguments.length>0&&record===null;editing=record;editedSettingsFields.clear();
+ for(const input of $('#settings-form').querySelectorAll('input')){input.value=record?.[input.name]??'';input.oninput=()=>editedSettingsFields.add(input.name);}
+ show('settings','知识库设置');
+}
+function completeSettingsEnvironment(){
+ if(newLibraryIntent)return;
+ editing=selected;
+ for(const input of $('#settings-form').querySelectorAll('input'))if(!editedSettingsFields.has(input.name))input.value=selected?.[input.name]??'';
+}
 export {taskUrl};
 const categoryBrowser=createCategoryBrowser({tree:$('#categories'),content:$('#category-content')??$('#files'),getLibrary:()=>selected});
 const home=createTaskHome({tasks:$('#tasks'),featured:$('#featured'),more:$('#more'),getLibrary:()=>selected});
@@ -72,10 +83,13 @@ $('#start').onsubmit=event=>{event.preventDefault();return run(async version=>{
  finally{button.disabled=!selected?.valid;button.textContent=label;$('#library').disabled=false;$('#start').removeAttribute('aria-busy');if(version===contextVersion)environment();}
 });};
 run(async version=>{
+ const navigationAtStart=navigationVersion;
  if(!await loadEnvironment(version))return;
+ // 用户已经选择其他页面时，初始化只补齐环境，不覆盖当前导航。
+ if(navigationVersion!==navigationAtStart){if(!$('#settings').hidden)completeSettingsEnvironment();return;}
  const params=new URLSearchParams(location.search),batchId=params.get('batchId');
  if(batchId){
-  const task=await requestBatch('get',{batchId});if(version!==contextVersion)return;
+  const task=await requestBatch('get',{batchId});if(version!==contextVersion||navigationVersion!==navigationAtStart)return;
   const library=libraries.find(record=>libraryPathKey(record.libraryPath)===libraryPathKey(task.libraryPath));
   if(!library?.valid)throw new Error('此任务的知识库未配置或设置失效，请先修正设置。');
   selected=library;$('#library').value=library.id;environment();await categories();if(version!==contextVersion)return;

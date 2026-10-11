@@ -19,3 +19,22 @@ test('全部流程页面提供统一导航，跨页可直达分类与设置，�
   assert.match(response.headers.get('content-type'),/image\/svg\+xml/);
  }
 });
+
+test('设置直达页面在脚本和知识库请求完成前也不展示任务首页',async t=>{
+ const server=createApp();await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const response=await fetch(`http://127.0.0.1:${server.address().port}/?view=settings`);
+ const html=await response.text();
+ assert.match(html,/<span id="page-label">知识库设置<\/span>/);
+ assert.match(html,/<h1 id="title">知识库设置<\/h1>/);
+ assert.match(html,/<section id="home" hidden/);
+ assert.match(html,/<form id="start" hidden/);
+ assert.match(html,/<button id="settings-nav" aria-current="page"/);
+});
+test('未允许的view参数包括对象继承属性均安全回到首页',async t=>{
+ const server=createApp();await listenForBrowser(server);t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+ const base=`http://127.0.0.1:${server.address().port}`;
+ for(const view of ['constructor','__proto__','toString','task-workspace','unknown']){
+  const response=await fetch(`${base}/?view=${encodeURIComponent(view)}`,{signal:AbortSignal.timeout(2000)}),html=await response.text();assert.equal(response.status,200,view);
+  assert.match(html,/<span id="page-label">任务首页<\/span>/);
+ }
+});

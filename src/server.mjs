@@ -39,7 +39,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
         const [file, type] = assets[req.url.split('?')[0]];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
         const content=await readFile(new URL(`../public/${file}`, import.meta.url));
-        return res.end(type==='text/html'?renderPageShell(content.toString(),req.url.split('?')[0]):content);
+        return res.end(type==='text/html'?renderPageShell(content.toString(),req.url):content);
       }
       const workspaceAction = /^\/api\/workspace\/(list|save|create|categories)$/.exec(req.url)?.[1];
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
