@@ -33,7 +33,7 @@ export function createTaskHome({tasks,featured,more,getLibrary}){
   tasks.replaceChildren();featured.replaceChildren();
   const candidate=records.find(batch=>!finished(batch));
   if(candidate){
-   const view=state(candidate),icon=element('span','▤'),content=element('div'),heading=element('h2',title(candidate));icon.className='featured-icon';content.className='featured-content';heading.append(badge(view));
+   const view=state(candidate),icon=element('span'),content=element('div'),heading=element('h2',title(candidate));icon.className='featured-icon';icon.setAttribute('aria-hidden','true');const glyph=element('span');glyph.className='ui-icon icon-document';icon.append(glyph);content.className='featured-content';heading.append(badge(view));
    content.append(element('p','继续上次任务'),heading,element('p',progress(candidate)),element('small','更新于 '+new Date(candidate.updatedAt).toLocaleString('zh-CN')));
    featured.append(icon,content,link(view.action,view.url,true));featured.className='featured-task';
   }else{featured.className='home-guidance';featured.append(element('p',records.length?'所有任务均已完成。可以从收件箱开始新的整理。':'还没有整理任务。选择材料范围，创建第一个任务。'));}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 
-async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task}={}){
+async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{records:[],nextCursor:null}],create,search='',task,batchesUnavailable=false}={}){
  const document=createInboxDocument();document.body.replaceChildren();
  const add=(tag,id,parent=document.body)=>{const node=document.createElement(tag);node.id=id;parent.append(node);return node;};
  for(const id of ['title','notice','error','categories','featured','tasks','category-description','files','page-label'])add('div',id);
@@ -20,7 +20,7 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
  else if(url==='/api/workspace/list')value={libraries};
  else if(url==='/api/workspace/categories')value={categories:[],files:[],total:0,nextCursor:null};
  else if(url==='/api/batches/get')value=task;
- else if(url==='/api/batches/list')value=pages[input.cursor??0];
+ else if(url==='/api/batches/list'){if(batchesUnavailable)throw new Error('合成批次读取失败');value=pages[input.cursor??0];}
  else if(url==='/api/workspace/create')return create(input);
  else throw new Error('意外请求 '+url);
  return {ok:true,json:async()=>structuredClone(value)};
@@ -29,6 +29,20 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
  return {document,location,calls,$:id=>document.querySelector('#'+id)};
 }
 const batch=(batchId,libraryPath,updatedAt,status='pending')=>({batchId,libraryPath,updatedAt,mode:'inbox',phase:'file-review',sourceRoot:libraryPath+'/inbox',counts:{total:4,classified:4},flow:{},report:{status,hasExecution:status==='complete',counts:{total:4,succeeded:status==='complete'?4:0,retained:0,blocked:0,failed:0,pending:status==='complete'?0:4,unverified:0}}});
+
+test('专用流程的设置入口只展示设置，不创建任务或调用模型',async t=>{
+ const p=await page(t,{search:'?view=settings'});
+ await p.document.waitFor(()=>p.$('title').textContent==='知识库设置');
+ assert.equal(p.$('home').hidden,true);assert.equal(p.$('settings-nav').getAttribute('aria-current'),'page');
+ assert.equal(p.calls.some(call=>/create|analyze|confirm|apply/.test(call.url)),false);
+});
+
+test('专用流程的分类入口读取当前知识库分类，不写入材料',async t=>{
+ const p=await page(t,{search:'?view=browse'});
+ await p.document.waitFor(()=>p.calls.some(call=>call.url==='/api/workspace/categories'));
+ assert.equal(p.$('browse').hidden,false);assert.equal(p.$('browse-nav').getAttribute('aria-current'),'page');
+ assert.equal(p.calls.some(call=>/create|analyze|confirm|apply/.test(call.url)),false);
+});
 
 test('第二库任务刷新失败后重试保持当前库身份',async t=>{
  const p=await page(t,{libraries:[{id:'a',libraryPath:'/a',valid:true},{id:'b',libraryPath:'/b',valid:true}],pages:[{records:[batch('库一','/a','2026-10-05'),batch('库二','/b','2026-10-05')],nextCursor:null}]});
@@ -117,8 +131,27 @@ test('同名知识库选项包含可区分位置，独有名称保持简短且�
 
 test('首页任务与直达任务对库路径大小写、分隔符和尾斜线使用相同身份规则',async t=>{
  const task={...batch('direct','e:/wiki/','2026-10-05'),sources:[],nextCursor:null};
- const p=await page(t,{libraries:[{id:'wiki',libraryPath:'E:\\wiki',valid:true}],pages:[{records:[task],nextCursor:null}],search:'?batchId=direct',task});
+ const p=await page(t,{libraries:[{id:'wiki',libraryPath:'E:\\wiki',valid:true}],pages:[{records:[task],nextCursor:null}],search:'?batchId=direct&view=settings',task});
  await p.document.waitFor(()=>p.$('task-workspace').textContent.includes('整批 0 份'));
  assert.equal(p.$('error').textContent,'');assert.equal(p.$('library').value,'wiki');
+ assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
+ await p.$('home-nav').click();
  assert.equal(p.$('tasks').querySelector('a').href,'/?batchId=direct');
+});
+
+
+test('批次读取失败不阻挡直达知识库设置',async t=>{
+ const p=await page(t,{search:'?view=settings',batchesUnavailable:true});
+ await p.document.waitFor(()=>p.$('title').textContent==='知识库设置'||p.$('error').textContent);
+ assert.equal(p.$('title').textContent,'知识库设置');assert.equal(p.$('settings').hidden,false);assert.equal(p.$('home').hidden,true);
+ assert.equal(p.$('library').value,'a');assert.equal(p.$('error').textContent,'');
+ assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
+});
+
+test('批次读取失败不阻挡直达分类并显示真实分类空态',async t=>{
+ const p=await page(t,{search:'?view=browse',batchesUnavailable:true});
+ await p.document.waitFor(()=>p.$('files').textContent.includes('此分类暂无')||p.$('error').textContent);
+ assert.equal(p.$('browse').hidden,false);assert.equal(p.$('home').hidden,true);assert.match(p.$('files').textContent,/此分类暂无 Markdown 材料/);
+ assert.equal(p.$('error').textContent,'');assert.equal(p.calls.some(call=>call.url==='/api/batches/list'),false);
+ assert.equal(p.calls.some(call=>call.url==='/api/workspace/categories'&&call.input.id==='a'),true);
 });

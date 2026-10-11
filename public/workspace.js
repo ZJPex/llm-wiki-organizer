@@ -45,12 +45,13 @@ async function browse(value=''){
  if(!selected?.valid){settings();return;}
  show('browse','分类浏览');await categoryBrowser.open(value);
 }
-async function reload(version,preferred=selected?.id){
+async function loadEnvironment(version,preferred=selected?.id){
  home.clear();$('#notice').textContent='正在校验知识库设置…';$('#start button').disabled=true;
- try{if(!await loadLibraries(preferred,version))return;}
+ try{if(!await loadLibraries(preferred,version))return false;}
  catch(error){if(version===contextVersion){$('#start button').disabled=true;$('#notice').textContent='知识库加载失败，请刷新重试或检查设置。';home.clear('加载失败，请点击刷新任务重试。');}throw error;}
- await categories();if(version===contextVersion)await home.load();
+ await categories();return version===contextVersion;
 }
+async function reload(version,preferred=selected?.id){if(await loadEnvironment(version,preferred))await home.load();}
 $('#home-nav').onclick=()=>run(async()=>{show('home','整理任务');await home.load();});
 $('#browse-nav').onclick=()=>browse('');
 $('#settings-nav').onclick=()=>settings();$('#new-library').onclick=()=>settings(null);
@@ -71,8 +72,8 @@ $('#start').onsubmit=event=>{event.preventDefault();return run(async version=>{
  finally{button.disabled=!selected?.valid;button.textContent=label;$('#library').disabled=false;$('#start').removeAttribute('aria-busy');if(version===contextVersion)environment();}
 });};
 run(async version=>{
- await reload(version);if(version!==contextVersion)return;
- const batchId=new URLSearchParams(location.search).get('batchId');
+ if(!await loadEnvironment(version))return;
+ const params=new URLSearchParams(location.search),batchId=params.get('batchId');
  if(batchId){
   const task=await requestBatch('get',{batchId});if(version!==contextVersion)return;
   const library=libraries.find(record=>libraryPathKey(record.libraryPath)===libraryPathKey(task.libraryPath));
@@ -80,5 +81,7 @@ run(async version=>{
   selected=library;$('#library').value=library.id;environment();await categories();if(version!==contextVersion)return;
   show('task-workspace',task.mode==='restructure'?'首次重构':'集中审核整理方案');
   reviewWorkspace=await (task.mode==='restructure'?mountRestructureWorkspace:mountReviewWorkspace)($('#task-workspace'),batchId);
- }else if(!selected||!selected.valid)settings();
+ }else if(!selected||!selected.valid||params.get('view')==='settings')settings();
+ else if(params.get('view')==='browse')await browse('');
+ else {show('home','整理任务');await home.load();}
 });
