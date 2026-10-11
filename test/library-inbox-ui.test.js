@@ -34,6 +34,17 @@ test('收件箱页面明确勾选后启动，保存建议和人工编辑，再�
  await home.load();assert.match(tasks.textContent,/已归档/);assert.equal(items[1].status,'pending');
 });
 
+test('新增分类完整展示父级名称收益，明确接受后随审核提交，历史调整另列说明',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let review;
+ const item={itemId:'new',identity:'新主题.md',status:'reviewable',available:true,suggestion:'新主题.md',classification:{category:'001 缓存/001.01 一致性',decision:'missing-category',options:['','001 缓存'],newCategory:{proposalHash:'frozen-proposal',path:'001 缓存/001.01 一致性',parent:'001 缓存',label:'一致性',reason:'正文专门比较一致性策略',benefit:'便于直接查找一致性实践'},adjustments:[{type:'rename',from:'002 数据库',to:'数据库技术',reason:'统一术语',benefit:'方便历史查找',affectedCategories:['002 数据库'],requiresHistoryValidation:true}]}};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};if(url==='/api/inbox/review')review=JSON.parse(options.body);return {ok:true,json:async()=>({libraryId:'library',items:[item]})};});
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();assert.match(tasks.textContent,/父级：001 缓存 · 名称：一致性/);assert.match(tasks.textContent,/查找收益：便于直接查找/);assert.match(tasks.textContent,/审核期间不建目录/);assert.match(tasks.textContent,/另列目录调整/);assert.match(tasks.textContent,/副本验证与恢复流程/);
+ const selected=tasks.querySelector('article').querySelector('input');selected.checked=true;await selected.dispatchEvent({type:'change'});
+ const accepted=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='接受新增分类 新主题.md');assert.equal(accepted.checked,false);accepted.checked=true;await accepted.dispatchEvent({type:'change'});await home.load();assert.equal(tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='接受新增分类 新主题.md').checked,true);
+ await tasks.querySelectorAll('button').find(node=>node.textContent==='保存所选审核').click();assert.equal(review.acceptNewCategory,true);assert.equal(review.newCategoryHash,'frozen-proposal');assert.equal(review.category,item.classification.category);
+});
+
 test('待定方案呈现候选与理由，根分类须明确选择，不能把缺省选择当审核授权',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let reviews=0;

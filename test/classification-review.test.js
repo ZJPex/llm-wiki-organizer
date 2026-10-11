@@ -23,6 +23,7 @@ async function fixture(t,{files=['跨主题'],choose,search,categories=['001 缓
    calls.push(request);
    if(request.stage==='category-search')return search?.(request)??{candidates:categories};
    if(request.stage==='category-choice')return choose(request);
+   if(request.stage==='new-category')return {};
    return {title:'缓存与数据库实践',summary:request.content,evidence:[request.content.slice(0,15)],uncertain:false};
   }});
   const batches=createBatchService({planning,stateDirectory:path.join(f.root,'batches'),strategies:{inbox:createInboxStrategy()}}),workspace=createWorkspaceService({batches,stateDirectory:path.join(f.root,'settings')}),server=createApp({batches,workspace});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
