@@ -1,4 +1,5 @@
 import {reportStatus,reportSummary} from './report-ui.js';
+import {modelConcurrencyControls} from './model-concurrency-ui.js';
 import {element,statusName,requestBatch} from './batch-ui.js';
 import {submitHistoryPlan,renderHistoryActions} from './history-actions.js';
 import {renderInvalidations} from './invalidation-ui.js';
@@ -44,6 +45,7 @@ export async function mountReviewWorkspace(host,batchId){
  const updateScope=()=>{scope.replaceChildren(element('summary','核对目标知识库与最终位置'),element('p','当前知识库：'+batch.libraryPath));for(const source of rows.filter(s=>draft(s).selected&&selectable(s))){scope.append(element('p',source.identity+' → '+currentDraftFinalPath(source)));}};
  const queueActions=element('div');queueActions.className='review-queue-actions';
  const queueHeading=element('div');queueHeading.className='review-queue-heading';queueHeading.append(element('h2','日常整理'),notice);
+ const modelProgress=element('div');modelProgress.setAttribute('aria-label','分析阶段与服务并发');queueHeading.append(modelProgress);const modelControls=modelConcurrencyControls(modelProgress);
  const queueTools=element('div');queueTools.className='review-queue-tools';const queueSafety=element('div');queueSafety.className='review-queue-safety';
  queue.append(queueHeading,summary,filters,queueSafety,queueActions,tableHost,pager,queueTools);grid.append(queue,reading);
  const results=element('section');results.hidden=true;results.setAttribute('aria-label','归档结果');
@@ -110,6 +112,7 @@ export async function mountReviewWorkspace(host,batchId){
  }
  function render(){
   if(!batch)return;
+  modelControls.update(batch);
   const completed=batch.report?.status==='complete'&&batch.flow.newArchive;
   notice.textContent=busy?busyMessage:completed?`归档成功，共 ${batch.report.counts.succeeded} 份材料。${reportSummary(batch.report)}。`:batch.report?.hasExecution?`${reportStatus(batch.report.status)}。${reportSummary(batch.report)}。`:`${batch.report?reportStatus(batch.report.status):statusName(batch.phase)}`;
   controls.replaceChildren();for(const action of reviewAnalysisActions(batch))controls.append(button(({startAnalysis:'开始分析',pauseAnalysis:'暂停分析',continueAnalysis:'继续分析'})[action],async()=>{await requestBatch(action,{batchId});await load();},readRequired));

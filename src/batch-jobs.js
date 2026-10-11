@@ -7,7 +7,7 @@ export function analysisJobView(batch){
  const live=jobs.get(batch.batchId),saved=batch.flow.analysisJob;
  let status=live?.status??saved?.status??'idle';
  if(!live&&['running','pausing'].includes(status))status='interrupted';
- return {status,boundary:'current-material',allowedActions:status==='running'?['pauseAnalysis']:status==='pausing'?[]:status==='idle'?['startAnalysis']:status==='complete'?['startAnalysis']:['continueAnalysis'],
+ return {status,boundary:'model-request',allowedActions:status==='running'?['pauseAnalysis']:status==='pausing'?[]:status==='idle'?['startAnalysis']:status==='complete'?['startAnalysis']:['continueAnalysis'],
   ...(status==='interrupted'&&(batch.flow.classificationCurrent?.status==='running'||batch.flow.analysisCurrent?.status==='running')?{uncertainSourceId:(batch.flow.classificationCurrent?.status==='running'?batch.flow.classificationCurrent:batch.flow.analysisCurrent).sourceId}:{}),
   ...(saved?.error?{error:saved.error}:{})};
 }
@@ -37,7 +37,7 @@ export function createBatchJobs({store,view,step,classify,proposeTree,checkIdle,
    }
    if(job.status==='pausing')finalStatus='paused';
    await save(job,finalStatus);
-  }catch(error){await save(job,'failed',error).catch(()=>{});}
+  }catch(error){await save(job,error.code==='ANALYSIS_PAUSED'?'paused':'failed',error.code==='ANALYSIS_PAUSED'?undefined:error).catch(()=>{});}
   finally{jobs.delete(job.batchId);if(libraries.get(job.libraryKey)===job)libraries.delete(job.libraryKey);}
  }
  async function startAnalysis(input){
