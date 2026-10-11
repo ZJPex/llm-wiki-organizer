@@ -68,7 +68,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(!item.legacyChoices.some(value=>value.originId===input.originId))batchFail('INVALID_SELECTION','旧结果来源不属于当前文件');
    const adopted=await batches.adoptLegacy(library,item,input.originId);Object.assign(item,{batchId:adopted.batchId,sourceId:adopted.sourceId,legacyOrigin:input.originId,invalidatedReason:adopted.candidate.reason});delete item.legacyChoices;await sync(saved);return view(await save(saved));
   }),
-  list:input=>serial(input.id,async()=>{await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return view(await save(saved));}),
+  list:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return {...view(await save(saved)),...(batches.getClassificationRules?await batches.getClassificationRules(library):{classificationRules:[]})};}),
   scan:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),discovered=await discoverSources(library),seen=new Set();await sync(saved);
    for(const source of discovered.sources){
@@ -90,6 +90,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(chosen.some(item=>item.status==='legacy-recovery'))batchFail('EXECUTION_INTERRUPTED','存在旧执行现场，请从原任务报告查询或恢复');
    if(chosen.some(item=>item.status==='legacy-conflict'))batchFail('LEGACY_CHOICE_REQUIRED','请先明确选择旧结果来源');
    if(chosen.some(item=>!item.available||item.ingestStatus==='uncertain'))batchFail('INVALID_SELECTION','来源不可用或关联不明确');
+   if(batches.getClassificationRules){const latest=await batches.getClassificationRules(library),stale=chosen.filter(item=>item.batchId&&item.status!=='archived'&&((item.classification?.rulesHash&&item.classification.rulesHash!==latest.rulesHash)||(item.classification?.status!=='confirmed'&&item.classification?.effectiveRulesHash&&item.classification.effectiveRulesHash!==latest.effectiveRulesHash)));for(const batchId of new Set(stale.map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.refreshReview({batchId,revision:batch.revision});}if(stale.length)await sync(saved);}
    const pending=chosen.filter(item=>!item.batchId);
    if(pending.length){
     if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','当前知识库仍在分析，请等待完成后开始新材料');
@@ -106,7 +107,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    await workspace.checked(input.id);if(!input.reviewBasis)batchFail('REVIEW_REQUIRED','请读取当前审核依据后保存');const saved=await record(input.id);await sync(saved);const [item]=select(saved,[input.itemId]);
    if(!['reviewable','confirmed','needs-classification'].includes(item.status))batchFail('REVIEW_REQUIRED','请等待正文分析后再保存审核');
    const batch=await snapshot(item.batchId);
-   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,reviewBasis:input.reviewBasis,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,manuallyEdited:input.manuallyEdited===true});
+   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,reviewBasis:input.reviewBasis,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,saveClassificationRule:input.saveClassificationRule,ruleText:input.ruleText,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,manuallyEdited:input.manuallyEdited===true});
    await sync(saved);return view(await save(saved));
   }),
   archive:input=>serial(input.id,async()=>{

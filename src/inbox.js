@@ -10,12 +10,13 @@ import {validateName} from './planning.js';
 import {localReferences} from './links.js';
 import {selectedEvolution,sourceDirectoryDependency} from './directory-dependencies.js';
 import {assertNewCategoryBaseline,installNewCategory} from './new-categories.js';
+import {createClassificationRules} from './classification-rules.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const key=value=>path.resolve(value).replaceAll('\\','/').toLowerCase();
 const inside=(root,file)=>key(file)===key(root)||key(file).startsWith(`${key(root)}/`);
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
-const inputFor=(batch,source)=>({sourceRoot:batch.sourceRoot,libraryPath:batch.libraryPath,configPath:batch.configPath,identity:source.currentIdentity??source.identity,categoryRoot:path.join(batch.libraryPath,'raw/sources')});
+const inputFor=(batch,source)=>({sourceRoot:batch.sourceRoot,libraryPath:batch.libraryPath,classificationLibraryIdentity:batch.classificationLibraryIdentity,configPath:batch.configPath,identity:source.currentIdentity??source.identity,categoryRoot:path.join(batch.libraryPath,'raw/sources')});
 async function checkedFile(file,expected) {
   await safePath(path.dirname(file));const stat=await lstat(file);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)fail('UNSAFE_SOURCE','来源必须为独立普通文件');
@@ -88,6 +89,8 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       if(source.ingestStatus==='uncertain')return {status:'blocked',selected:false};
       await checkedFile(source.currentPath,source.hash);
       let entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
+      const latestRules=planning.getClassificationRules?await planning.getClassificationRules(batch):null;
+      if(latestRules&&((entry.classification?.rulesHash&&latestRules.rulesHash!==entry.classification.rulesHash)||(entry.classification?.status!=='confirmed'&&entry.classification?.effectiveRulesHash&&latestRules.effectiveRulesHash!==entry.classification.effectiveRulesHash))){await planning.invalidateReview({...inputFor(batch,source),clearClassification:true});entry={...entry,classification:null,frozenPlan:null};}
       const reliable=entry.analysis&&!entry.analysis.uncertain&&['body','navigation'].includes(entry.kind);
       if(reliable&&!entry.classification&&planning.classify&&!modelContext()?.shouldPause?.())entry=await planning.classify({...inputFor(batch,source),onProgress});
       return {...entry,status:reliable?(entry.classification?'classified':'analyzed'):'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
@@ -112,7 +115,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
           const named=await planning.confirm({...base,name:input.name});
           return {sourcePatch:{...named,...result.sourcePatch,manuallyEdited:input.manuallyEdited===true}};
         }
-        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash});
+        const entry=await planning.confirmPlan({...base,name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,saveClassificationRule:input.saveClassificationRule,ruleText:input.ruleText});
         return {sourcePatch:{...entry,targetPath:entry.frozenPlan.finalPath,status:'reviewed',selected:true,manuallyEdited:input.manuallyEdited===true}};
       }
       if(input.action==='classify')return {sourcePatch:{...await planning.classify({...base,onProgress}),status:'classified',selected:false,targetPath:null}};
@@ -150,7 +153,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       }
       fail('INVALID_REVIEW','不支持的 Inbox 审核步骤');
     },
-    async prepare({batch,selected}) {
+    async prepare({batch,selected,planning}) {
       const discovered=await currentSources(batch),categoryRoot=path.join(batch.libraryPath,'raw/sources');
       const evolution=selectedEvolution(batch,selected),mappings=[],newFiles=[],newCategories=[],destinations=new Set();
       for(const source of selected) {
@@ -160,13 +163,14 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(source.status!=='reviewed'||!source.frozenPlan||!source.targetPath)fail('REVIEW_REQUIRED','请先完成命名、分类和路径审核');
         const {planHash,...unsigned}=source.frozenPlan;if(planDigest(unsigned)!==planHash)fail('INVALID_PLAN','文件审核计划已损坏');
         if((await categoryCatalog(categoryRoot)).hash!==source.frozenPlan.catalogHash)fail('STALE_PLAN','分类树变化，需要重新审核');
+        if(source.frozenPlan.rulesHash&&planning?.getClassificationRules&&(await planning.getClassificationRules(batch)).rulesHash!==source.frozenPlan.rulesHash)fail('STALE_RULES','分类偏好变化，需要重新检索并审核，正文分析保留');
         if(source.frozenPlan.newCategory){if(source.ingestStatus!=='new')fail('HISTORY_REQUIRED','历史材料新增类别须经过完整验证与恢复流程');newCategories.push(source.frozenPlan.newCategory);}
         await checkedFile(source.currentPath,source.hash);await checkTarget(categoryRoot,source.targetPath,source.currentPath);
         if(destinations.has(key(source.targetPath)))fail('TARGET_EXISTS','批次中存在重复目标');destinations.add(key(source.targetPath));
         if(source.ingestStatus==='historical')mappings.push({id:source.sourceId,from:`raw/sources/${current.rawIdentity}`,to:path.relative(batch.libraryPath,source.targetPath).replaceAll('\\','/')});
         else if(source.ingestStatus==='new') {
           if(key(source.currentPath)===key(source.targetPath)&&path.resolve(source.currentPath)!==path.resolve(source.targetPath))fail('CASE_ONLY_NEW_UNSUPPORTED','未摄取材料仅大小写改名需先人工处理，不能静默忽略');
-          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash});
+          newFiles.push({sourceId:source.sourceId,from:source.currentPath,to:source.targetPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash,...(source.frozenPlan.rulesHash?{rulesHash:source.frozenPlan.rulesHash,rulesStateDirectory:source.frozenPlan.rulesStateDirectory,classificationLibraryIdentity:source.frozenPlan.libraryIdentity}:{})});
         }
         else fail('UNKNOWN_ASSOCIATION','不能安全判断来源关联');
       }
@@ -177,7 +181,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       await checkNewLinks(batch,newFiles);
       return {historicalRequest:mappings.length?{mappings,...(evolution?{evolutionPlan:evolution}:{})}:null,newFiles,...(newCategories.length?{newCategories}:{}),affectedSourceIds:selected.map(source=>source.sourceId),watchConfig:await watchSettings(batch)};
     },
-    async archive({batch,slice,artifactDirectory}) {
+    async archive({batch,slice,artifactDirectory,planning}) {
       const raw=path.join(batch.libraryPath,'raw/sources'),sourceRoot=await safePath(batch.sourceRoot);
       await safePath(artifactDirectory);
       if(inside(batch.libraryPath,artifactDirectory)||inside(batch.sourceRoot,artifactDirectory))fail('UNSAFE_JOURNAL','归档日志必须在库与 Inbox 之外');
@@ -196,6 +200,12 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
         if(slice.historicalResult?.items?.some(item=>['failed','applied-unverified','not-run','pending','selected'].includes(item.status)))fail('HISTORY_REQUIRED','历史材料仍有未成功项目');
         if(slice.historicalRequest?.mappings?.some(mapping=>!slice.historicalResult?.items?.some(item=>item.from===mapping.from&&item.to===mapping.to&&item.status==='succeeded')))fail('HISTORY_REQUIRED','新增材料依赖的历史映射尚未全部成功，不能扩大安全子集');
         const watch=await watchSettings(batch);if(watch.hash!==slice.watchConfig.hash)fail('STALE_SETTINGS','首次摄取设置变化，请重新审核');
+        const checkRules=async()=>{for(const item of journal.items.filter(item=>item.status!=='succeeded'&&item.rulesHash)){
+          let latest;if(planning?.getClassificationRules)latest=await planning.getClassificationRules({...batch,classificationLibraryIdentity:item.classificationLibraryIdentity});
+          else{if(!item.rulesStateDirectory)fail('RULES_REQUIRED','归档缺少分类规则版本核验');const directory=await safePath(item.rulesStateDirectory);if(inside(batch.libraryPath,directory)||inside(batch.sourceRoot,directory))fail('UNSAFE_RULES','分类规则记录必须位于来源与知识库之外');latest=await createClassificationRules({stateDirectory:directory}).read({...batch,classificationLibraryIdentity:item.classificationLibraryIdentity});}
+          if(item.rulesHash!==latest.rulesHash)fail('STALE_RULES','分类偏好已变化，保留来源并重新检索审核');
+        }};
+        await checkRules();
         const checkAssociations=async()=>{const found=await discoverSources({...batch,includeIdentities:journal.items.filter(item=>item.status!=='succeeded').map(item=>path.relative(sourceRoot,item.from).replaceAll('\\','/'))});if(found.flow.busy)fail('SOURCE_BUSY','知识库有待处理任务，归档暂停');for(const item of journal.items.filter(item=>item.status!=='succeeded'))assertSourceAssociation(item,found.sources.find(source=>key(source.currentPath)===key(item.from)));};
         await checkAssociations();
         await checkNewLinks(batch,journal.items.filter(item=>item.status!=='succeeded'));
@@ -208,6 +218,7 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
           if(item.status==='succeeded')continue;
           if(key(item.from)===key(item.to)){await checkedFile(item.from,item.hash);item.status='succeeded';await save();continue;}
           if(item.status==='pending') {
+            await checkRules();
             await checkAssociations();await checkedFile(item.from,item.hash);await checkTarget(raw,item.to,item.from);await mkdir(path.dirname(item.to),{recursive:true});await safePath(path.dirname(item.to));
             item.status='copy-intent';await save();await checkpoint('before-copy',item);
             await copyFile(item.from,item.to,constants.COPYFILE_EXCL);await checkedFile(item.to,item.hash);item.status='copied';await save();await checkpoint('copied',item);

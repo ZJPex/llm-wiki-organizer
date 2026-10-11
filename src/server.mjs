@@ -43,6 +43,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       assets['/library-inbox.js']=['library-inbox.js','text/javascript'];
       assets['/legacy-results.js']=['legacy-results.js','text/javascript'];
       assets['/new-category-review.js']=['new-category-review.js','text/javascript'];
+      assets['/classification-rule-review.js']=['classification-rule-review.js','text/javascript'];
       if (req.method === 'GET' && assets[req.url.split('?')[0]]) {
         const [file, type] = assets[req.url.split('?')[0]];
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
