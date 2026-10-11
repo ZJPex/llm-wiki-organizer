@@ -54,7 +54,7 @@ export function createWorkspaceService({batches,stateDirectory=path.join(os.home
    const catalog=await categoryCatalog(root),category=input.category??'';
    if(!catalog.categories.some(item=>item.path===category))batchFail('INVALID_CATEGORY','分类不存在');
    const entries=await readdir(path.join(root,category),{withFileTypes:true});
-   const files=entries.filter(entry=>entry.isFile()&&/\.md$/i.test(entry.name)).map(entry=>({name:entry.name,path:path.join(root,category,entry.name)}));
+   const files=entries.filter(entry=>entry.isFile()&&/\.md$/i.test(entry.name)).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0).map(entry=>({name:entry.name,path:path.join(root,category,entry.name)}));
    const cursor=Math.max(0,Number(input.cursor)||0),limit=50;
    return {categories:catalog.categories,category,files:files.slice(cursor,cursor+limit),total:files.length,nextCursor:cursor+limit<files.length?cursor+limit:null};
   },

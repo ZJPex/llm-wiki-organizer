@@ -1,27 +1,101 @@
-import {reportStatus,reportSummary} from './report-ui.js';
+import {createCategoryBrowser} from './category-browser.js';
+import {createTaskHome,taskUrl,libraryPathKey} from './task-home.js';
 import {mountRestructureWorkspace} from './restructure-workspace.js';
 import {mountReviewWorkspace} from './review-workspace.js';
-import {element,statusName,requestBatch} from './batch-ui.js';
+import {element,requestBatch} from './batch-ui.js';
 const $=selector=>document.querySelector(selector);
-let libraries=[],selected=null,editing=null,busy=false,nextCursor=null,category='',fileCursor=0,reviewWorkspace=null;
+let libraries=[],selected=null,editing=null,busy=false,contextVersion=0,reviewWorkspace=null,navigationVersion=0;
 async function api(action,input={}) {
  const {token}=await(await fetch('/api/session')).json();
  const response=await fetch('/api/workspace/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)});
- const result=await response.json();if(!response.ok)throw new Error(result.error);return result;
+ const result=await response.json();if(!response.ok)throw new Error(result.error?.message??result.error);return result;
 }
-async function run(action){if(busy)return;busy=true;$('#error').textContent='';try{await action();}catch(error){$('#error').textContent=error.message;}finally{busy=false;}}
-function show(name,title){for(const id of ['home','browse','settings','task-workspace'])$('#'+id).hidden=id!==name;$('#title').textContent=title;}
-function settings(record=selected){editing=record;for(const input of $('#settings-form').querySelectorAll('input'))input.value=record?.[input.name]??'';show('settings','知识库设置');}
-function link(label,url){const node=element('a',label);node.href=url;return node;}
-// 后续分析与集中审核可在此统一替换任务入口，首页只负责发现和启动任务。
-export const taskUrl=batch=>`/?batchId=${encodeURIComponent(batch.batchId)}`;
-async function loadLibraries(preferred){libraries=(await api('list')).libraries;$('#library').replaceChildren();for(const record of libraries){const option=element('option',record.libraryPath+(record.valid?'':'（需修正）'));option.value=record.id;$('#library').append(option);}selected=libraries.find(record=>record.id===preferred)??libraries[0]??null;if(selected)$('#library').value=selected.id;else $('#library').append(element('option','请先设置知识库'));$('#notice').textContent=selected?(selected.valid?'设置已校验，可直接创建或继续任务。':selected.error):'尚未配置知识库，请补齐位置并保存。';$('#start button').disabled=!selected?.valid;}
-async function categories(){ $('#categories').replaceChildren();if(!selected?.valid){$('#categories').append(element('p','保存有效设置后显示真实分类。'));return;}const result=await api('categories',{id:selected.id});for(const item of result.categories){const button=element('button',item.path||'Raw 根目录');button.onclick=()=>run(()=>!$('#task-workspace').hidden&&reviewWorkspace?reviewWorkspace.filterCategory(item.path):browse(item.path));button.dataset.category=item.path;$('#categories').append(button);}}
-async function browse(value,cursor=0){category=value;fileCursor=cursor;const result=await api('categories',{id:selected.id,category,cursor});show('browse',category||'Raw 根目录');$('#category-description').textContent=result.categories.find(item=>item.path===category)?.description||'当前分类中的材料';$('#files').replaceChildren();for(const file of result.files)$('#files').append(element('p',file.name),element('small',file.path));if(!result.total)$('#files').append(element('p','此分类暂无 Markdown 材料。'));$('#files-more').hidden=result.nextCursor===null;$('#files-more').onclick=()=>run(()=>browse(category,result.nextCursor));for(const button of document.querySelectorAll('#categories button'))button.setAttribute('aria-current',String(button.dataset.category===category));}
-async function tasks(append=false){const page=await requestBatch('list',{cursor:append?nextCursor:0,limit:50});nextCursor=page.nextCursor;let table=$('#tasks tbody');if(!append){$('#tasks').replaceChildren();const wrap=element('div');wrap.className='table-scroll';const grid=element('table'),head=element('thead'),row=element('tr');for(const name of ['任务 / 材料范围','当前阶段','进度','继续操作'])row.append(element('th',name));head.append(row);table=element('tbody');grid.append(head,table);wrap.append(grid);$('#tasks').append(wrap);}for(const batch of page.records){if(selected&&batch.libraryPath.replaceAll('\\','/').toLowerCase()!==selected.libraryPath.replaceAll('\\','/').toLowerCase())continue;const row=element('tr'),name=element('td',batch.mode==='inbox'?'日常收件箱整理':'首次整体重构');name.append(element('p',batch.sourceRoot),element('small',new Date(batch.updatedAt).toLocaleString()));const progress=element('td',batch.report?reportSummary(batch.report):`${batch.counts.succeeded??0} / ${batch.counts.total} 已完成`),action=element('td');action.append(link('继续任务',taskUrl(batch)),link('报告与恢复','/task-report?batchId='+encodeURIComponent(batch.batchId)));row.append(name,element('td',batch.report?reportStatus(batch.report.status):statusName(batch.phase)+(batch.interrupted?'（上次操作中断）':'')),progress,action);table.append(row);}$('#tasks .empty')?.remove();if(!table.children.length){const empty=element('p',nextCursor!==null?'本页暂无当前知识库任务，可加载更多。':'暂无整理任务。选择材料范围后创建任务。');empty.className='empty';$('#tasks').append(empty);}$('#more').hidden=nextCursor===null;}
-$('#home-nav').onclick=()=>run(async()=>{show('home','整理任务');await tasks();});$('#settings-nav').onclick=()=>settings();$('#new-library').onclick=()=>settings(null);$('#library').onchange=()=>run(async()=>{selected=libraries.find(record=>record.id===$('#library').value);await loadLibraries(selected.id);await categories();show('home','整理任务');await tasks();});$('#refresh').onclick=()=>run(async()=>{await loadLibraries(selected?.id);await categories();await tasks();});$('#more').onclick=()=>run(()=>tasks(true));
-$('#settings-form').onsubmit=event=>{event.preventDefault();run(async()=>{const record=await api('save',{...Object.fromEntries(new FormData(event.target)),...(editing?{id:editing.id,revision:editing.revision}:{})});await loadLibraries(record.id);await categories();show('home','整理任务');await tasks();});};
-$('#start').onsubmit=event=>{event.preventDefault();run(async()=>{if(!selected?.valid)throw new Error('请先修正知识库设置');const batch=await api('create',{id:selected.id,mode:$('#mode').value});location.href=taskUrl(batch);});};
-run(async()=>{await loadLibraries();await categories();await tasks();const batchId=new URLSearchParams(location.search).get('batchId');if(batchId){show('task-workspace','集中审核整理方案');const task=await requestBatch('get',{batchId});reviewWorkspace=await (task.mode==='restructure'?mountRestructureWorkspace:mountReviewWorkspace)($('#task-workspace'),batchId);}else if(!selected||!selected.valid)settings();});
-
-
+async function run(action){if(busy)return;const version=contextVersion;busy=true;$('#error').textContent='';try{await action(version);}catch(error){if(version===contextVersion)$('#error').textContent=error.message;}finally{if(version===contextVersion)busy=false;}}
+function show(name,title){
+ navigationVersion++;
+ if(name!=='browse')categoryBrowser.clear();
+ for(const id of ['home','browse','settings','task-workspace'])$('#'+id).hidden=id!==name;
+ $('#title').textContent=title;$('#start').hidden=name!=='home';if($('#home-intro'))$('#home-intro').hidden=name!=='home';
+ $('#page-label').textContent=({home:'任务首页',browse:'分类浏览',settings:'知识库设置','task-workspace':'集中审核'})[name];
+ for(const [id,page] of [['home-nav','home'],['browse-nav','browse'],['settings-nav','settings']])$('#'+id).setAttribute('aria-current',name===page||(name==='task-workspace'&&page==='home')?'page':'false');
+}
+let newLibraryIntent=false;const editedSettingsFields=new Set();
+function settings(record=selected){
+ newLibraryIntent=arguments.length>0&&record===null;editing=record;editedSettingsFields.clear();
+ for(const input of $('#settings-form').querySelectorAll('input')){input.value=record?.[input.name]??'';input.oninput=()=>editedSettingsFields.add(input.name);}
+ show('settings','知识库设置');
+}
+function completeSettingsEnvironment(){
+ if(newLibraryIntent)return;
+ editing=selected;
+ for(const input of $('#settings-form').querySelectorAll('input'))if(!editedSettingsFields.has(input.name))input.value=selected?.[input.name]??'';
+}
+export {taskUrl};
+const categoryBrowser=createCategoryBrowser({tree:$('#categories'),content:$('#category-content')??$('#files'),getLibrary:()=>selected});
+const home=createTaskHome({tasks:$('#tasks'),featured:$('#featured'),more:$('#more'),getLibrary:()=>selected});
+function environment(){
+ $('#library').title=selected?.libraryPath??'';
+ $('#notice').textContent=selected?(selected.valid?'● 设置已校验':selected.error??'设置已失效，请修正。'):'尚未配置知识库，请补齐位置并保存。';
+ $('#start button').disabled=!selected?.valid;
+}
+function libraryLabel(record){
+ const parts=record.libraryPath.replaceAll('\\','/').split('/').filter(Boolean);
+ for(let length=1;length<=parts.length;length++){const label=parts.slice(-length).join('/');if(!libraries.some(other=>other.id!==record.id&&libraryPathKey(other.libraryPath).split('/').slice(-length).join('/')===libraryPathKey(label)))return label;}
+ return record.libraryPath;
+}
+async function loadLibraries(preferred,version=contextVersion){
+ const result=await api('list');if(version!==contextVersion)return false;
+ libraries=result.libraries;$('#library').replaceChildren();
+ for(const record of libraries){const option=element('option',libraryLabel(record)+(record.valid?'':'（需修正）'));option.value=record.id;option.title=record.libraryPath;$('#library').append(option);}
+ selected=libraries.find(record=>record.id===preferred)??libraries[0]??null;
+ if(selected)$('#library').value=selected.id;else $('#library').append(element('option','请先设置知识库'));
+ environment();return true;
+}
+async function categories(){categoryBrowser.clear();}
+async function browse(value=''){
+ if(!selected?.valid){settings();return;}
+ show('browse','分类浏览');await categoryBrowser.open(value);
+}
+async function loadEnvironment(version,preferred=selected?.id){
+ home.clear();$('#notice').textContent='正在校验知识库设置…';$('#start button').disabled=true;
+ try{if(!await loadLibraries(preferred,version))return false;}
+ catch(error){if(version===contextVersion){$('#start button').disabled=true;$('#notice').textContent='知识库加载失败，请刷新重试或检查设置。';home.clear('加载失败，请点击刷新任务重试。');}throw error;}
+ await categories();return version===contextVersion;
+}
+async function reload(version,preferred=selected?.id){if(await loadEnvironment(version,preferred))await home.load();}
+$('#home-nav').onclick=()=>run(async()=>{show('home','整理任务');await home.load();});
+$('#browse-nav').onclick=()=>browse('');
+$('#settings-nav').onclick=()=>settings();$('#new-library').onclick=()=>settings(null);
+$('#library').onchange=()=>{
+ // 切库不受旧请求的 busy 锁阻挡；代次令牌阻止迟到结果回填。
+ contextVersion++;busy=false;selected=libraries.find(record=>record.id===$('#library').value)??null;
+ home.clear();categoryBrowser.clear();$('#task-workspace').hidden=true;$('#task-workspace').replaceChildren();reviewWorkspace=null;
+ show('home','整理任务');environment();return run(version=>reload(version));
+};
+$('#refresh').onclick=()=>run(version=>reload(version));$('#more').onclick=()=>run(()=>home.load(true));
+$('#settings-form').onsubmit=event=>{event.preventDefault();return run(async version=>{const record=await api('save',{...Object.fromEntries(new FormData(event.target)),...(editing?{id:editing.id,revision:editing.revision}:{})});if(version!==contextVersion)return;show('home','整理任务');await reload(version,record.id);});};
+$('#start').onsubmit=event=>{event.preventDefault();return run(async version=>{
+ if(!selected?.valid)throw new Error('请先修正知识库设置');
+ const button=$('#start button'),label=button.textContent;
+ button.disabled=true;button.textContent='正在创建任务…';$('#library').disabled=true;
+ $('#start').setAttribute('aria-busy','true');$('#notice').textContent='正在校验材料并创建任务，请稍候。';
+ try{const batch=await api('create',{id:selected.id,mode:$('#mode').value});if(version===contextVersion)location.href=taskUrl(batch);}
+ finally{button.disabled=!selected?.valid;button.textContent=label;$('#library').disabled=false;$('#start').removeAttribute('aria-busy');if(version===contextVersion)environment();}
+});};
+run(async version=>{
+ const navigationAtStart=navigationVersion;
+ if(!await loadEnvironment(version))return;
+ // 用户已经选择其他页面时，初始化只补齐环境，不覆盖当前导航。
+ if(navigationVersion!==navigationAtStart){if(!$('#settings').hidden)completeSettingsEnvironment();return;}
+ const params=new URLSearchParams(location.search),batchId=params.get('batchId');
+ if(batchId){
+  const task=await requestBatch('get',{batchId});if(version!==contextVersion||navigationVersion!==navigationAtStart)return;
+  const library=libraries.find(record=>libraryPathKey(record.libraryPath)===libraryPathKey(task.libraryPath));
+  if(!library?.valid)throw new Error('此任务的知识库未配置或设置失效，请先修正设置。');
+  selected=library;$('#library').value=library.id;environment();await categories();if(version!==contextVersion)return;
+  show('task-workspace',task.mode==='restructure'?'首次重构':'集中审核整理方案');
+  reviewWorkspace=await (task.mode==='restructure'?mountRestructureWorkspace:mountReviewWorkspace)($('#task-workspace'),batchId);
+ }else if(!selected||!selected.valid||params.get('view')==='settings')settings();
+ else if(params.get('view')==='browse')await browse('');
+ else {show('home','整理任务');await home.load();}
+});
