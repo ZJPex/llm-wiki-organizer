@@ -54,7 +54,7 @@ test('仅所选文件分析，重复启动复用结果，保存审核但确认�
  const ready=await waitFor(()=>f.request('inbox/list',input),value=>value.items.find(item=>item.itemId===chosen.itemId).status==='reviewable');
  assert.equal(ready.items.find(item=>item.identity==='b.md').status,'pending');assert.ok(f.calls.length>0);assert.ok(f.calls.filter(call=>call.identity).every(call=>call.identity==='a.md'));
  const before=f.calls.length;await f.request('inbox/start',{...input,itemIds:[chosen.itemId]});await delay(40);assert.equal(f.calls.length,before);
- const reviewed=await f.request('inbox/review',{...input,itemId:chosen.itemId,name:'缓存分析.md',category:''});assert.equal(reviewed.items.find(item=>item.itemId===chosen.itemId).status,'confirmed');
+ const reviewed=await f.request('inbox/review',{...input,itemId:chosen.itemId,reviewBasis:ready.items.find(item=>item.itemId===chosen.itemId).reviewBasis,name:'缓存分析.md',category:''});assert.equal(reviewed.items.find(item=>item.itemId===chosen.itemId).status,'confirmed');
  assert.match(await readFile(path.join(f.sourceRoot,'a.md'),'utf8'),/^\[a\]/);await assert.rejects(readFile(path.join(f.backup.originalPath,'raw/sources/缓存分析.md')),{code:'ENOENT'});
  const result=await f.request('inbox/archive',{...input,itemIds:[chosen.itemId],requestId:'archive-once',approved:true,writersPaused:true});assert.equal(result.items.find(item=>item.itemId===chosen.itemId).status,'archived');
  assert.match(await readFile(path.join(f.backup.originalPath,'raw/sources/缓存分析.md'),'utf8'),/^\[a\]/);
@@ -65,8 +65,8 @@ test('仅所选文件分析，重复启动复用结果，保存审核但确认�
 
 test('分析后的改名保留正文结果但使审核失效，正文修改移除旧建议，跨库文件不能启动',async t=>{
  const f=await fixture(t),input={id:f.id},initial=await f.request('inbox/scan',input),chosen=initial.items.find(item=>item.identity==='a.md');
- await f.request('inbox/start',{...input,itemIds:[chosen.itemId]});await waitFor(()=>f.request('inbox/list',input),value=>value.items.find(item=>item.itemId===chosen.itemId).status==='reviewable');
- await f.request('inbox/review',{...input,itemId:chosen.itemId,name:'缓存分析.md',category:''});const analyzed=f.calls.filter(call=>call.stage==='segment').length,total=f.calls.length;
+ await f.request('inbox/start',{...input,itemIds:[chosen.itemId]});const ready=await waitFor(()=>f.request('inbox/list',input),value=>value.items.find(item=>item.itemId===chosen.itemId).status==='reviewable');
+ await f.request('inbox/review',{...input,itemId:chosen.itemId,reviewBasis:ready.items.find(item=>item.itemId===chosen.itemId).reviewBasis,name:'缓存分析.md',category:''});const analyzed=f.calls.filter(call=>call.stage==='segment').length,total=f.calls.length;
  await rename(path.join(f.sourceRoot,'a.md'),path.join(f.sourceRoot,'renamed.md'));
  const changed=await f.request('inbox/scan',input),renamed=changed.items.find(item=>item.itemId===chosen.itemId);assert.equal(renamed.identity,'renamed.md');assert.equal(renamed.status,'needs-classification');assert.equal(renamed.targetPath,undefined);assert.equal(f.calls.length,total);
  await assert.rejects(f.request('inbox/archive',{...input,itemIds:[chosen.itemId],requestId:'stale',approved:true,writersPaused:true}),{code:'REVIEW_REQUIRED'});

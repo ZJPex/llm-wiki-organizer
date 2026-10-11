@@ -9,10 +9,11 @@ const normalSuggestion=source=>selectable(source)&&source.classification?.catego
 const readingStatus=source=>normalSuggestion(source)?'可审核':['succeeded','excluded'].includes(source.status)?statusName(source.status):'待处理';
 const readingTitle=name=>name.replace(/\.md$/i,'');
 export function reconcileReviewDraft(source,current){
- if(current?.hash!==source.hash)current={hash:source.hash,reviewVersion:source.reviewVersion??0,name:'',category:'',selected:source.status==='reviewed'&&source.selected===true,manual:false};
- if((current.reviewVersion??0)!==(source.reviewVersion??0)){current.selected=false;if(source.reviewResetCategory){current.category='';current.categoryManual=false;}current.reviewVersion=source.reviewVersion??0;}
- if(!(current.nameManual??current.manual))current.name=source.confirmedName??source.suggestion??'';
+ if(!current)current={hash:source.hash,reviewVersion:source.reviewVersion??0,name:'',category:'',selected:source.status==='reviewed'&&source.selected===true,manual:false,reviewBasis:source.reviewBasis};
+ if(current.hash!==source.hash||(current.reviewVersion??0)!==(source.reviewVersion??0)){current.selected=false;current.invalidated=true;current.hash=source.hash;current.reviewVersion=source.reviewVersion??0;}
+ if(source.confirmedName||!(current.nameManual??current.manual))current.name=source.confirmedName??source.suggestion??'';
  if(!(current.categoryManual??current.manual))current.category=source.classification?.category??'';
+ if(!current.invalidated)current.reviewBasis=source.reviewBasis;
  return current;
 }
 export function reviewAnalysisActions(batch){
@@ -57,7 +58,7 @@ export async function mountReviewWorkspace(host,batchId){
  async function load(){
   const result=await requestBatch('get',{batchId,limit:50});let all=[...result.sources],cursor=result.nextCursor;
   while(cursor!==null){const next=await requestBatch('get',{batchId,cursor,limit:50});if(next.revision!==result.revision){notice.textContent='后台正在更新，稍后刷新完整范围';return;}all.push(...next.sources);cursor=next.nextCursor;}
-  readRequired=false;batch=result;rows=all;for(const source of rows)draft(source);saveDrafts();render();
+  readRequired=false;batch=result;rows=all;for(const source of rows)draft(source);saveDrafts();render(true);
  }
  const filtered=()=>rows.filter(source=>(!category||((source.classification?.category??'')===category || (category==='@root'&&source.classification?.category==='')))&&(!status||source.status===status)&&(!query||(source.identity+' '+draft(source).name).toLowerCase().includes(query.toLowerCase())));
  function showDetail(source){
@@ -82,16 +83,20 @@ export async function mountReviewWorkspace(host,batchId){
   if(!unsafe()&&!['succeeded','excluded'].includes(source.status))detail.append(button('本项保留原处',async()=>{await requestBatch('reviewItem',{batchId,revision:batch.revision,sourceId:source.sourceId,action:'exclude'});draft(source).selected=false;await load();}));
  }
  function showReading(source,visible){
+  if(source&&reading.getAttribute('data-source-id')===source.sourceId&&Array.from(reading.querySelectorAll('input,select,textarea')).includes(document.activeElement)){
+   const d=draft(source),state=reading.querySelector('[aria-label="当前审核状态"]');state.textContent=readingStatus(source)+(d.manual?' · 已手改':'')+(d.invalidated?' · 草稿保留，请重新审核':'');const inputs=reading.querySelectorAll('input');inputs[0].disabled=busy||unsafe()||!!source.confirmedName;inputs[1].disabled=busy||unsafe();
+   showDetail(source);return;
+  }
   reading.replaceChildren();
   if(!source){reading.append(element('h2','没有符合条件的材料'),element('p','请调整名称、分类或状态筛选。'));detail.hidden=true;return;}
-  const d=draft(source),position=visible.indexOf(source),heading=element('div');heading.className='review-reading-heading';
+  reading.setAttribute('data-source-id',source.sourceId);const d=draft(source),position=visible.indexOf(source),heading=element('div');heading.className='review-reading-heading';
   const breadcrumb=element('p',`集中审核 / 材料 ${page*20+position+1}`);breadcrumb.className='review-breadcrumb';
   const navigation=element('div');navigation.className='review-reading-actions';
   const navigate=(label,offset)=>{const b=element('button',label);b.disabled=!visible[position+offset];b.onclick=()=>{focus=visible[position+offset].sourceId;render();};return b;};
   detailTrigger=element('button','详情');detailTrigger.setAttribute('aria-expanded',String(detailsOpen));detailTrigger.setAttribute('aria-controls','review-evidence-details');detailTrigger.onclick=()=>{detailsOpen=!detailsOpen;detailTrigger.setAttribute('aria-expanded',String(detailsOpen));showDetail(source);if(detailsOpen)detail.querySelector('button').focus();};detail.id='review-evidence-details';
   navigation.append(navigate('上一篇',-1),navigate('下一篇',1),detailTrigger);heading.append(breadcrumb,navigation);
   const title=element('h2',readingTitle(d.name||source.currentIdentity||source.identity));title.className='review-title';
-  const state=element('span',readingStatus(source)+(d.manual?' · 已手改':''));state.className='review-item-state';state.setAttribute('data-warning',String(!normalSuggestion(source)));
+  const state=element('span',readingStatus(source)+(d.manual?' · 已手改':'')+(d.invalidated?' · 草稿保留，请重新审核':''));state.className='review-item-state';state.setAttribute('aria-label','当前审核状态');state.setAttribute('data-warning',String(!normalSuggestion(source)));
   const titleRow=element('div');titleRow.className='review-title-row';titleRow.append(title,state);
   const fields=element('div');fields.className='review-fields';
   const name=element('input');name.value=d.name;name.disabled=!editable(source)||!!source.confirmedName||unsafe()||busy;name.setAttribute('aria-label','新名称 '+source.identity);
@@ -100,8 +105,8 @@ export async function mountReviewWorkspace(host,batchId){
   const nameLabel=element('label','建议文件名');nameLabel.append(name);const categoryLabel=element('label','建议分类');categoryLabel.append(categoryInput,data);
   const rootCategory=element('button','Raw 根目录');rootCategory.disabled=categoryInput.disabled;rootCategory.onclick=()=>{categoryInput.value='';categoryInput.oninput();};categoryLabel.append(rootCategory);fields.append(nameLabel,categoryLabel);
   const original=element('p','原文件名：'+source.identity);original.className='review-original';
-  name.oninput=()=>{d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=readingTitle(d.name||source.identity);state.textContent=readingStatus(source)+' · 已手改';showDetail(source);updateScope();};
-  categoryInput.oninput=()=>{d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=readingStatus(source)+' · 已手改';showDetail(source);updateScope();};
+  name.oninput=()=>{const current=rows.find(value=>value.sourceId===source.sourceId);d.name=name.value;d.nameManual=true;d.categoryManual??=false;d.manual=true;saveDrafts();title.textContent=readingTitle(d.name||current.identity);state.textContent=readingStatus(current)+' · 已手改'+(d.invalidated?' · 草稿保留，请重新审核':'');showDetail(current);updateScope();};
+  categoryInput.oninput=()=>{const current=rows.find(value=>value.sourceId===source.sourceId);d.category=categoryInput.value;d.categoryManual=true;d.nameManual??=false;d.manual=true;saveDrafts();state.textContent=readingStatus(current)+' · 已手改'+(d.invalidated?' · 草稿保留，请重新审核':'');showDetail(current);updateScope();};
   const evidence=element('div');evidence.className='review-evidence';evidence.append(element('p','摘要与证据'),element('h3','摘要'),element('p',source.analysis?.summary||'尚无摘要'),element('h3','原文证据'));
   if(!source.analysis?.evidence?.length)evidence.append(element('p','尚无原文证据'));
   for(const quote of source.analysis?.evidence??[])evidence.append(element('blockquote',quote));
@@ -110,7 +115,7 @@ export async function mountReviewWorkspace(host,batchId){
   if(warnings.length){const issues=element('div');issues.className='review-warnings';issues.setAttribute('role','note');for(const message of warnings)issues.append(element('p',message));reading.append(issues);}
   reading.append(evidence,detail);showDetail(source);
  }
- function render(){
+ function render(background=false){
   if(!batch)return;
   modelControls.update(batch);
   const completed=batch.report?.status==='complete'&&batch.flow.newArchive;
@@ -121,11 +126,12 @@ export async function mountReviewWorkspace(host,batchId){
   const options=(select,values,value,label)=>{select.replaceChildren();const first=element('option',label);first.value='';select.append(first);for(const [key,text] of values){const option=element('option',text);option.value=key;select.append(option);}select.value=value;};
   options(categoryFilter,[...new Set(rows.map(s=>s.classification?.category).filter(v=>v!==null&&v!==undefined))].map(v=>[v||'@root',v||'Raw 根目录']),category,'全部分类');
   options(statusFilter,[...new Set(rows.map(s=>s.status))].map(v=>[v,statusName(v)]),status,'全部状态');
-  const list=filtered();page=Math.min(page,Math.max(0,Math.ceil(list.length/20)-1));const visible=list.slice(page*20,page*20+20);if(!visible.some(s=>s.sourceId===focus))focus=visible[0]?.sourceId;
+  const preserveReading=background&&Array.from(reading.querySelectorAll('input,select,textarea')).includes(document.activeElement)&&rows.some(source=>source.sourceId===focus);
+  const list=filtered();page=Math.min(page,Math.max(0,Math.ceil(list.length/20)-1));const visible=list.slice(page*20,page*20+20);if(!preserveReading&&!visible.some(s=>s.sourceId===focus))focus=visible[0]?.sourceId;
   const selected=rows.filter(s=>draft(s).selected&&selectable(s));summary.textContent=`整批 ${rows.length} 份 · 正常建议 ${rows.filter(normalSuggestion).length} 份 · 例外 ${rows.filter(s=>['needs-information','blocked','analysis-failed','evolution-review','classification-failed'].includes(s.status)||s.classification?.category===null||s.categoryConfirmationError).length} 份 · 当前筛选 ${list.length} 份 · 跨全部页面已选 ${selected.length} 份 · 已保存 ${rows.filter(s=>s.status==='reviewed').length} 份`;
   tableHost.replaceChildren();
   for(const source of visible){const d=draft(source),row=element('div');row.className='review-queue-item';row.setAttribute('data-current',String(focus===source.sourceId));
-   const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&selectable(source);checkbox.disabled=!selectable(source)||busy||unsafe();checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;saveDrafts();render();};
+   const checkbox=element('input');checkbox.type='checkbox';checkbox.checked=d.selected&&selectable(source);checkbox.disabled=!selectable(source)||busy||unsafe();checkbox.setAttribute('aria-label','选择 '+source.identity);checkbox.onchange=()=>{d.selected=checkbox.checked;if(d.selected&&d.invalidated){d.invalidated=false;d.reviewBasis=source.reviewBasis;}saveDrafts();render();};
    const open=element('button');open.className='review-open';open.setAttribute('aria-label','阅读 '+source.identity);open.setAttribute('aria-current',String(focus===source.sourceId));
    const icon=element('span');icon.className='review-file-icon';icon.setAttribute('aria-hidden','true');
    const name=element('span',d.name||source.identity);name.className='review-queue-name';
@@ -135,14 +141,14 @@ export async function mountReviewWorkspace(host,batchId){
    open.append(icon,name,caption,badge);open.onclick=()=>{focus=source.sourceId;render();};row.append(checkbox,open);tableHost.append(row);
   }
   if(!visible.length)tableHost.append(element('p','没有符合条件的材料'));
-  showReading(visible.find(s=>s.sourceId===focus),visible);
+  showReading((preserveReading?rows:visible).find(s=>s.sourceId===focus),visible);
   pager.replaceChildren(button('上一页',()=>{page--;render();},page===0),element('span',`第 ${page+1} / ${Math.max(1,Math.ceil(list.length/20))} 页`),button('下一页',()=>{page++;render();},(page+1)*20>=list.length));
   const alreadyValidated=batch.historyValidation?.status==='awaiting-apply'&&selected.length===batch.historyPlan?.selectedCount&&selected.every(s=>s.selected&&s.status==='reviewed'&&draft(s).name===s.confirmedName&&draft(s).category===s.classification?.category);
   const pureNew=selected.every(s=>s.ingestStatus==='new'&&!s.directoryDependency);
   const pause=element('input');pause.type='checkbox';pause.checked=paused;pause.disabled=busy;pause.onchange=()=>{paused=pause.checked;render();};const pauseLabel=element('label','我已暂停 Wiki 及其他程序对知识库和收件箱的写入');pauseLabel.prepend(pause);
-  queueActions.replaceChildren(button('选择整批正常建议',()=>{for(const s of rows)if(normalSuggestion(s)&&draft(s).name)draft(s).selected=true;saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}));
+  queueActions.replaceChildren(button('选择整批正常建议',()=>{for(const s of rows)if(normalSuggestion(s)&&draft(s).name){const d=draft(s);d.selected=true;d.invalidated=false;d.reviewBasis=s.reviewBasis;}saveDrafts();render();}),button('清除全部选择',()=>{for(const d of Object.values(drafts))d.selected=false;saveDrafts();render();}));
   footer.hidden=selected.length===0;
-  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨全部页面，包含隐藏筛选项）；未选中项保留。`),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!paused||!selected.length||alreadyValidated||unsafe()||batch.historyValidation?.status==='running'));
+  footer.replaceChildren(element('p',`操作范围：整批中明确勾选的 ${selected.length} 份（跨全部页面，包含隐藏筛选项）；未选中项保留。`),button('保存所选审核',async()=>{const saved=await requestBatch('confirmPlans',{batchId,revision:batch.revision,replaceSelection:true,items:selected.map(s=>({sourceId:s.sourceId,reviewBasis:draft(s).reviewBasis,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}))});for(const source of saved.sources??[]){if(selected.some(item=>item.sourceId===source.sourceId)&&source.status==='reviewed'){const d=drafts[source.sourceId];Object.assign(d,{hash:source.hash,reviewVersion:source.reviewVersion??0,reviewBasis:source.reviewBasis,invalidated:false});}}await load();},!selected.length||unsafe()),button(alreadyValidated?'当前方案已验证，请在上方最终确认':pureNew?'确认并归档所选材料':'确认整理方案并开始安全验证',async()=>{const items=selected.map(s=>({sourceId:s.sourceId,name:draft(s).name,category:draft(s).category,manuallyEdited:draft(s).manual}));if(!paused)throw new Error('请先勾选暂停外部写入');if(pureNew)await requestBatch('confirmNewArchive',{batchId,revision:batch.revision,writersPaused:paused,requestId:crypto.randomUUID(),items});else await submitHistoryPlan({batch,items,writersPaused:paused});await load();},!paused||!selected.length||alreadyValidated||unsafe()||['running','pausing'].includes(batch.analysisJob?.status)||batch.historyValidation?.status==='running'));
   updateScope();footer.prepend(scope,pauseLabel);
   renderHistoryActions(history,{batch,writersPaused:paused,run,refresh:load});
   if(footer.hidden&&batch.historyValidation)history.prepend(element('p','当前知识库：'+batch.libraryPath),pauseLabel);
@@ -152,6 +158,6 @@ export async function mountReviewWorkspace(host,batchId){
   results.replaceChildren();results.hidden=!(batch.report?.hasExecution||['partial','failed','retained','needs-recovery'].includes(batch.report?.status));if(!results.hidden){results.append(element('h2',reportStatus(batch.report.status)),element('p',reportSummary(batch.report)));const reportLink=element('a','查看整批结果、保留原因与恢复证据');reportLink.href='/task-report?batchId='+encodeURIComponent(batchId);results.append(reportLink);}
  }
  search.oninput=()=>{query=search.value;page=0;render();};categoryFilter.onchange=()=>{category=categoryFilter.value;page=0;render();};statusFilter.onchange=()=>{status=statusFilter.value;page=0;render();};
- await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&!(root.contains(document.activeElement)&&['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName))&&(['running','pausing'].includes(batch?.analysisJob?.status)||batch?.historyValidation?.status==='running'||batch?.historyApplication?.status==='running'))run(load);},2000);
+ await load();const timer=setInterval(()=>{if(host.hidden||!host.isConnected){clearInterval(timer);return;}if(!busy&&(['running','pausing'].includes(batch?.analysisJob?.status)||batch?.historyValidation?.status==='running'||batch?.historyApplication?.status==='running'))void load().catch(e=>error.textContent=e.message);},2000);
  return {refresh:load,filterCategory:value=>{category=value||'@root';page=0;render();}};
 }

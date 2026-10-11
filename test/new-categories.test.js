@@ -43,8 +43,8 @@ test('首份材料提出完整编号子类，审核无写入，明确确认归�
  assert.equal(item.classification.newCategory.path,'001 缓存/001.01 一致性');assert.equal(item.status,'reviewable');
  const newCall=f.calls.find(call=>call.stage==='new-category');assert.equal(newCall.budget.active,1);assert.equal(newCall.budget.unit,'organizer-model-calls');
  assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/001 缓存')),[]);
- await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'新主题.md',category:item.classification.category}));
- await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'新主题.md',category:item.classification.category,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
+ await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'新主题.md',category:item.classification.category}));
+ await f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'新主题.md',category:item.classification.category,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
  assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/001 缓存')),[]);assert.match(await readFile(path.join(f.sourceRoot,'新主题.md'),'utf8'),/新主题/);
  const archived=await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'first-new-category',approved:true,writersPaused:true});assert.equal(archived.items[0].status,'archived');
  const directory=path.join(f.libraryPath,'raw/sources/001 缓存/001.01 一致性');assert.deepEqual((await readdir(directory)).sort(),['.category.json','新主题.md']);
@@ -53,7 +53,7 @@ test('首份材料提出完整编号子类，审核无写入，明确确认归�
 
 const missing=()=>({candidates:[],decision:'missing-category',reason:'现有类别缺少对应主题'});
 const proposed=()=>({proposal:{parent:'',label:'分布式一致性',reason:'正文主要比较一致性策略',benefit:'直接查找分布式一致性资料'}});
-const reviewNew=(f,item)=>f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:item.classification.category,reviewBasis:item.reviewBasis,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
+const reviewNew=(f,item)=>f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:item.identity,category:item.classification.category,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
 
 test('多份材料协调同一个顶层提议和编号，重复授权不重复建类，同次授权只归档选中材料',async t=>{
  const f=await fixture(t,{files:['第一份','第二份','未选中'],search:missing,propose:proposed});
@@ -68,7 +68,7 @@ test('多份材料协调同一个顶层提议和编号，重复授权不重复�
 test('同义分类优先复用，不为首份材料重复创建已有类别，调整提示不执行历史目录改名',async t=>{
  const f=await fixture(t,{files:['首份'],search:missing,propose:()=>({proposal:{parent:'',label:'缓存',reason:'同义名称可直接归属',benefit:'沿用既有缓存入口'},adjustments:[{type:'rename',from:'002 数据库',to:'数据库技术',reason:'已有名称需统一，影响其历史材料',benefit:'统一查找术语'}]})}),item=f.ready.items[0];
  assert.equal(item.classification.category,'001 缓存');assert.equal(item.classification.decision,'existing');assert.equal(item.classification.newCategory,undefined);assert.equal(item.classification.adjustments[0].requiresHistoryValidation,true);
- await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'首份.md',category:'001 缓存'});await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'existing-alias',approved:true,writersPaused:true});
+ await f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'首份.md',category:'001 缓存'});await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'existing-alias',approved:true,writersPaused:true});
  assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources'))).sort(),['001 缓存','002 数据库','old.md']);
 });
 
@@ -86,8 +86,8 @@ test('分类落地失败保留两份来源与持久证据，重启后只经公�
 
 test('审核后的分类占用冲突保留来源，任意路径与篡改提议摘要不能取得新增授权',async t=>{
  const f=await fixture(t,{files:['冲突'],search:missing,propose:proposed}),item=f.ready.items[0];
- await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'冲突.md',category:'../任意',acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash}));
- await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'冲突.md',category:item.classification.category,acceptNewCategory:true,newCategoryHash:'wrong'}));
+ await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'冲突.md',category:'../任意',acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash}));
+ await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'冲突.md',category:item.classification.category,acceptNewCategory:true,newCategoryHash:'wrong'}));
  await reviewNew(f,item);await mkdir(path.join(f.libraryPath,'raw/sources/003 分布式一致性'));
  await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'occupied-category',approved:true,writersPaused:true});
  assert.match(await readFile(path.join(f.sourceRoot,'冲突.md'),'utf8'),/冲突/);assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/003 分布式一致性')),[]);assert.equal((await f.read()).items.filter(item=>item.status==='archived').length,0);
@@ -96,7 +96,7 @@ test('审核后的分类占用冲突保留来源，任意路径与篡改提议�
 test('不同新主题保留互不冲突编号，选已有类别不会顺带接受另一个新增提议',async t=>{
  const f=await fixture(t,{files:['主题A','主题B'],search:missing,propose:request=>({proposal:{parent:'',label:request.content.summary.includes('[主题A]')?'消息队列':'复制协议',reason:'正文有独立用途',benefit:'沿独立主题查找实践'}})});
  const categories=f.ready.items.map(item=>item.classification.category);assert.equal(new Set(categories).size,2);assert.deepEqual(categories.map(category=>category.slice(0,3)).sort(),['003','004']);
- const item=f.ready.items[0];await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:'001 缓存'});const saved=(await f.read()).items.find(value=>value.itemId===item.itemId);assert.equal(saved.classification.newCategoryAccepted,false);
+ const item=f.ready.items[0];await f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:item.identity,category:'001 缓存'});const saved=(await f.read()).items.find(value=>value.itemId===item.itemId);assert.equal(saved.classification.newCategoryAccepted,false);
  await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'choose-existing',approved:true,writersPaused:true});assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources'))).sort(),['001 缓存','002 数据库','old.md']);
 });
 

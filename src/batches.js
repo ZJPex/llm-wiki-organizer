@@ -5,9 +5,10 @@ import {createNewArchiveWorkflow} from './new-archive-workflow.js';
 import {createHistoryApplication,historyApplicationView} from './history-application.js';
 import {createHistoryWorkflow,historyWorkflowView,assertHistoryAccess} from './history-workflow.js';
 import {withModelContext,modelContext} from './model-concurrency.js';
-import {createBatchJobs,analysisJobView,assertAnalysisAccess,jobOwner} from './batch-jobs.js';
+import {createBatchJobs,analysisJobView,assertAnalysisAccess,assertAnalysisReviewAccess,jobOwner} from './batch-jobs.js';
 import {batchView} from './batch-view.js';
 import {canConfirmRecommendedCategory} from './category-confirmation.js';
+import {sameReviewBasis} from './review-basis.js';
 import path from 'node:path';
 import {mkdir,readFile,lstat} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -59,6 +60,21 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
   Object.assign(source,found,{status:source.analysis?'analyzed':'pending',selected:false,currentIdentity:found.identity});delete source.classification;delete source.frozenPlan;delete source.targetPath;invalidateSlices(batch);
  });}
  const sourceWrites=new Map();
+ async function reviewOperate(input,action,sourceIds){
+  const supplied=new Map(input.items?.map(item=>[item.sourceId,item.reviewBasis])??[[input.sourceId,input.reviewBasis]]),hasBasis=sourceIds.length&&sourceIds.every(id=>supplied.get(id));
+  const baseline=hasBasis?await store.get(input.batchId):await current(input);
+  if(baseline.mode!=='inbox')return operate(input,'review-running',action);
+  let failure;
+  const saved=await sourceTransaction(input.batchId,async record=>{
+   assertExecutionScene(record);assertHistoryAccess(record);assertAnalysisReviewAccess(record,sourceIds);
+   if(active.has(record.batchId)||activeLibraries.has(record.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库正在执行其他操作');
+   for(const id of sourceIds){const before=baseline.sources.find(source=>source.sourceId===id),now=record.sources.find(source=>source.sourceId===id);if(!before||!now||before.hash!==now.hash||before.currentPath!==now.currentPath||(before.reviewVersion??0)!==(now.reviewVersion??0)||before.status!==now.status||(hasBasis&&!sameReviewBasis(now,supplied.get(id))))batchFail('STALE_REVIEW','材料审核依据已变化，请重新读取');}
+   try{await action(record,async()=>{});for(const id of sourceIds){const source=record.sources.find(item=>item.sourceId===id);source.reviewVersion=(source.reviewVersion??0)+1;}}catch(error){failure=error;}
+   return record;
+  });
+  if(failure)throw failure;
+  return view(saved);
+ }
  // 模型等待不占用整库事务；每次只在最新记录中更新对应材料。
  function sourceTransaction(batchId,mutate){
   const previous=sourceWrites.get(batchId)??Promise.resolve();
@@ -150,7 +166,7 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
   }
   progress.status='complete';batch.phase='file-review';
  });}
- async function confirmPlans(input){return operate(input,'review-running',async(batch,save)=>{
+ async function confirmPlans(input){return reviewOperate(input,async(batch,save)=>{
   if(!['inbox','restructure'].includes(batch.mode))batchFail('INVALID_MODE','此模式不支持集中确认');
   if(batch.mode==='restructure'&&(batch.flow.tree?.status!=='approved'||input.treeRevision!==batch.flow.tree.revision))batchFail('STALE_TREE','分类树尚未审核或已变化，请先确认当前分类树');
   if(!Array.isArray(input.items)||!input.items.length||new Set(input.items.map(item=>item.sourceId)).size!==input.items.length)batchFail('INVALID_SELECTION','请明确选择本次保存的材料');
@@ -165,8 +181,8 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
    catch(error){source.categoryConfirmationError=error.message;throw error;}
   }
   batch.phase='file-review';
- });}
- async function reviewItem(input){return operate(input,'review-running',async batch=>{const source=batch.sources.find(s=>s.sourceId===input.sourceId);if(!source)batchFail('INVALID_SOURCE','材料不在此批次');if(input.action!=='exclude')await fresh(batch,[source]);invalidateSlices(batch);const result=await strategy(batch).review({batch,source,input,planning});if(result.discardedEvolutionHash)for(const item of batch.sources)if(item.frozenPlan?.evolutionHash===result.discardedEvolutionHash){delete item.frozenPlan;delete item.targetPath;item.selected=false;if(item.status==='reviewed')item.status='classified';}Object.assign(source,result.sourcePatch);Object.assign(batch.flow,result.flowPatch??{});batch.phase='file-review';});}
+ },input.items?.map(item=>item.sourceId)??[]);}
+ async function reviewItem(input){const action=async batch=>{const source=batch.sources.find(s=>s.sourceId===input.sourceId);if(!source)batchFail('INVALID_SOURCE','材料不在此批次');if(input.action!=='exclude')await fresh(batch,[source]);invalidateSlices(batch);const result=await strategy(batch).review({batch,source,input,planning});if(result.discardedEvolutionHash)for(const item of batch.sources)if(item.frozenPlan?.evolutionHash===result.discardedEvolutionHash){delete item.frozenPlan;delete item.targetPath;item.selected=false;if(item.status==='reviewed')item.status='classified';}Object.assign(source,result.sourcePatch);Object.assign(batch.flow,result.flowPatch??{});batch.phase='file-review';};return ['confirmPlan','confirmName','confirmCategory','exclude'].includes(input.action)?reviewOperate(input,action,[input.sourceId]):operate(input,'review-running',action);}
  async function treeAction(input){return operate(input,'tree-running',async(batch,save)=>{if(!strategy(batch).tree)batchFail('INVALID_MODE','此模式不使用整库分类树审核');invalidateSlices(batch);const priorTree=batch.flow.tree?.revision;Object.assign(batch.flow,await strategy(batch).tree({batch,input,planning,save}));if(priorTree!==undefined&&priorTree!==batch.flow.tree?.revision)recordTreeInvalidation(batch);batch.phase=batch.flow.tree?.status==='approved'?'file-review':'tree-review';});}
  async function prepareSlice(input){if(input.writersPaused!==true)batchFail('WRITERS_NOT_PAUSED','请暂停全部外部写入');return operate(input,'prepare-running',async(batch,save)=>{if(batch.slices.some(slice=>!['complete','failed','cancelled'].includes(slice.status)))batchFail('SLICE_PENDING','请先完成或处理已有分批');const selected=batch.sources.filter(s=>s.selected&&s.status==='reviewed');if(!selected.length)batchFail('EMPTY_SELECTION','请先审核并选中至少一份材料');await fresh(batch,selected);const prepared=await strategy(batch).prepare({batch,selected,planning});if(prepared.historicalRequest&&input.linkResolutions!==undefined)prepared.historicalRequest.linkResolutions=input.linkResolutions;const slice={...prepared,sliceId:randomUUID(),sourceIds:selected.map(s=>s.sourceId),status:'preparing'};slice.artifactDirectory=path.join(batch.artifactRoot,'s-'+randomUUID().replaceAll('-','').slice(0,12));await mkdir(slice.artifactDirectory);batch.slices.push(slice);await save();if(slice.historicalRequest?.mappings?.length||slice.historicalRequest?.evolutionPlan){const report=await backup({libraryPath:batch.libraryPath,wikiSourcePath:batch.wikiSourcePath,backupPath:path.join(slice.artifactDirectory,'backup'),validationPath:path.join(slice.artifactDirectory,'validation'),writersPaused:true});slice.backupReportPath=report.reportPath;await save();if(report.status!=='complete')batchFail('BACKUP_FAILED','完整备份未通过，当前分批停止');const plan=await migration.plan({...slice.historicalRequest,reportPath:report.reportPath,writersPaused:true});slice.planManifestPath=plan.planManifestPath;slice.migrationPlanId=plan.planId;slice.anticipatedJournalPath=report.validationPath+'.migration-'+plan.planId+'.json';slice.preview={items:plan.items,links:plan.links,indexes:plan.indexes};}slice.status='prepared';batch.phase='slice-review';});}
  async function validateSlice(input){if(input.approved!==true||input.writersPaused!==true)batchFail('REVIEW_REQUIRED','请审核分批方案并暂停写入');return operate(input,'validation-running',async(batch,save)=>{const slice=sliceOf(batch,input.sliceId);if(slice.status==='validated')return;const recoveryRetry=slice.status==='failed'&&success(slice.validationResult)&&slice.recoveryPlanPath&&!slice.originalResultPath&&!slice.authorizationPlanPath;if(!['prepared','validating'].includes(slice.status)&&!recoveryRetry)batchFail('INVALID_PHASE','分批尚未准备好验证');delete slice.error;slice.status='validating';await save();if(slice.planManifestPath){if(!slice.validationJournalPath){const existing=await lstat(slice.anticipatedJournalPath).catch(error=>{if(error.code==='ENOENT')return null;throw error;});const result=existing?JSON.parse(await readFile(slice.anticipatedJournalPath,'utf8')):await migration.execute({planId:slice.migrationPlanId,planManifestPath:slice.planManifestPath,approved:true,writersPaused:true});slice.validationJournalPath=result.journalPath??slice.anticipatedJournalPath;slice.validationResult={status:result.status,items:result.items,modelAttempts:result.modelAttempts,afterProof:result.afterProof,indexProof:result.indexProof,error:result.error};await save();if(!success(result))batchFail('VALIDATION_FAILED',result.error?.message??'验证副本未全部通过，不能应用原库');}else if(!success(slice.validationResult))batchFail('VALIDATION_FAILED','失败的副本需要通过恢复入口处理');if(!slice.recoveryPlanPath){const plan=await recovery.plan({journalPath:slice.validationJournalPath,mode:'new-directory',destination:path.join(slice.artifactDirectory,'recovery-drill'),writersPaused:true});slice.recoveryPlanPath=plan.recoveryPlanPath;await save();}const restored=await recovery.execute({recoveryPlanPath:slice.recoveryPlanPath,approved:true,writersPaused:true});slice.recoveryReportPath=restored.reportPath;await save();if(restored.status!=='complete')batchFail('RECOVERY_FAILED','恢复演练未完成，不能应用原库');}slice.status='validated';batch.phase='awaiting-original-review';});}
