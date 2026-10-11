@@ -1,4 +1,5 @@
 import {element} from './batch-ui.js';
+import {appendNewCategoryReview} from './new-category-review.js';
 
 export async function requestInbox(action,input){
  const {token}=await(await fetch('/api/session')).json();
@@ -47,6 +48,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    else if(['needs-classification','needs-information'].includes(item.status))card.append(element('p','没有可靠候选。'+(item.classification?.reason??'正文信息不足，请补充后重新处理。')));
    if(['reviewable','needs-classification','confirmed'].includes(item.status)){
     const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[]};
+    if(item.status==='confirmed'&&item.classification?.newCategoryAccepted&&!drafts.has(item.itemId)){draft.acceptNewCategory=true;draft.newCategoryHash=item.classification.newCategory.proposalHash;}
     const name=element('input');name.value=draft.name;name.setAttribute('aria-label','归档名称 '+item.identity);name.oninput=()=>{draft.name=name.value;drafts.set(item.itemId,draft);};
     const category=element('select');category.setAttribute('aria-label','主分类 '+item.identity);
     const placeholder=element('option','请选择主分类');placeholder.value='__unselected__';category.append(placeholder);
@@ -54,7 +56,8 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
     const nameLabel=element('label','归档名称');nameLabel.append(name);const categoryLabel=element('label','主分类');categoryLabel.append(category);card.append(nameLabel,categoryLabel,element('p','归档位置：'+(item.targetPath??'保存审核后生成')));
     const tags=element('input');tags.value=(draft.tags??[]).join('、');tags.setAttribute('aria-label','主题标签 '+item.identity);tags.oninput=()=>{draft.tags=tags.value.split(/[,，、]/).map(value=>value.trim()).filter(Boolean);drafts.set(item.itemId,draft);};const tagsLabel=element('label','其他主题标签（用顿号或逗号分隔）');tagsLabel.append(tags);card.append(tagsLabel);
     if(item.classification?.reason)card.append(element('p',item.classification.reason));
-   }else if(item.status==='archived')card.append(element('p','归档位置：'+item.targetPath),element('p','主题标签：'+(item.tags?.join('、')||'无')));
+    appendNewCategoryReview(card,item,draft,()=>drafts.set(item.itemId,draft));
+   }else if(item.status==='archived'){card.append(element('p','归档位置：'+item.targetPath),element('p','主题标签：'+(item.tags?.join('、')||'无')));appendNewCategoryReview(card,item,{},()=>{});}
    tasks.append(card);
   }
   const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const content=element('div');old.append(content);summary.onclick=()=>history(content);tasks.append(old);
