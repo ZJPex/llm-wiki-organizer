@@ -39,7 +39,7 @@ async function fixture(t,{files=['跨主题'],choose,search,categories=['001 缓
 test('跨主题只提出一个主分类和其他主题标签，人工标签审核与归档后持久可见且不复制原文',async t=>{
  const f=await fixture(t,{choose:request=>({category:'001 缓存',decision:'existing',tags:['数据库','事务'],reason:'主要用途是缓存更新，事务为关联主题',evidence:request.content.evidence,uncertain:false})}),item=f.ready.items[0];
  assert.equal(item.classification.category,'001 缓存');assert.equal(item.classification.decision,'existing');assert.deepEqual(item.tags,['数据库','事务']);assert.equal(f.ready.suggestionProgress.complete,1);
- await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'跨主题.md',category:'001 缓存',tags:['数据库','可靠性'],manuallyEdited:true});
+ await f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'跨主题.md',category:'001 缓存',tags:['数据库','可靠性'],manuallyEdited:true});
  assert.deepEqual((await f.read()).items[0].tags,['数据库','可靠性']);
  assert.match(await readFile(path.join(f.sourceRoot,'跨主题.md'),'utf8'),/^\[跨主题\]/);assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/001 缓存')),[]);
  await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'tags-archive',approved:true,writersPaused:true});const archived=await f.read();assert.equal(archived.items[0].status,'archived');assert.deepEqual(archived.items[0].tags,['数据库','可靠性']);assert.equal(archived.suggestionProgress.complete,0);assert.equal(archived.suggestionProgress.archived,1);
@@ -57,7 +57,7 @@ test('跨主题、缺少类别和证据不足分别呈现，完成分析不冒�
  assert.equal(f.ready.suggestionProgress.complete,0);assert.equal(f.ready.suggestionProgress.needsClassification,3);assert.equal(f.ready.suggestionProgress.needsInformation,1);
  assert.equal(f.ready.analysisProgress.completed,4);assert.equal(f.ready.analysisProgress.total,4);
  await assert.rejects(f.request('inbox/review',{id:f.id,itemId:title.itemId,name:'标题.md',category:''}),{code:'REVIEW_REQUIRED'});
- await f.request('inbox/review',{id:f.id,itemId:cross.itemId,name:'跨主题.md',category:'',tags:['数据库'],manuallyEdited:true});const selected=(await f.read()).items.find(item=>item.itemId===cross.itemId);assert.equal(selected.status,'confirmed');assert.equal(selected.classification.category,'');assert.equal(selected.classification.decision,'manual');
+ await f.request('inbox/review',{id:f.id,itemId:cross.itemId,reviewBasis:cross.reviewBasis,name:'跨主题.md',category:'',tags:['数据库'],manuallyEdited:true});const selected=(await f.read()).items.find(item=>item.itemId===cross.itemId);assert.equal(selected.status,'confirmed');assert.equal(selected.classification.category,'');assert.equal(selected.classification.decision,'manual');
  await f.request('inbox/archive',{id:f.id,itemIds:[cross.itemId],requestId:'manual-root',approved:true,writersPaused:true});assert.match(await readFile(path.join(f.libraryPath,'raw/sources/跨主题.md'),'utf8'),/^\[跨主题\]/);
 });
 
@@ -67,7 +67,7 @@ test('分类响应失败单独计数且不能归档，人工非法标签不能�
  await assert.rejects(failed.request('inbox/review',{id:failed.id,itemId:failed.ready.items[0].itemId,name:'跨主题.md',category:''}),{code:'REVIEW_REQUIRED'});
  const f=await fixture(t,{choose:request=>({category:'001 缓存',reason:'正文主要用途',evidence:request.content.evidence,uncertain:false})}),item=f.ready.items[0];
  assert.deepEqual(item.tags,[]);assert.equal(item.classification.decision,'existing');
- await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'跨主题.md',category:'001 缓存',tags:[123]}));
+ await assert.rejects(f.request('inbox/review',{id:f.id,itemId:item.itemId,reviewBasis:item.reviewBasis,name:'跨主题.md',category:'001 缓存',tags:[123]}));
  const restored=(await f.read()).items[0];assert.equal(restored.status,'reviewable');assert.deepEqual(restored.tags,[]);
 });
 

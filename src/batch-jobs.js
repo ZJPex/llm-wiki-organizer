@@ -16,6 +16,11 @@ export function assertAnalysisAccess(batch,input){
  const owner=libraries.get(batch.libraryPath.toLowerCase());
  if(owner&&input[jobOwner]!==owner)batchFail('BATCH_BUSY','该知识库正在后台分析，请先暂停并等待当前材料完成');
 }
+export function assertAnalysisReviewAccess(batch,sourceIds){
+ const owner=libraries.get(batch.libraryPath.toLowerCase());
+ if(!owner)return;
+ if(batch.mode!=='inbox'||sourceIds.some(id=>{const source=batch.sources.find(item=>item.sourceId===id);return !source||source.progress?.status==='running'||!source.analysis||!source.classification;}))batchFail('BATCH_BUSY','只允许保存已完成材料的审核');
+}
 export function createBatchJobs({store,view,step,classify,processSource,proposeTree,checkIdle,prepare}){
  async function save(job,status,error){
   const batch=await store.get(job.batchId);
