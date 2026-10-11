@@ -3,6 +3,42 @@ import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {createLibraryInboxHome} from '../public/library-inbox.js';
 
+test('旧结果摘要读取失败仍可访问原任务恢复导航，原导航错误保持可重试',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);
+ t.mock.method(globalThis,'fetch',async url=>({ok:url!=='/api/inbox/history',json:async()=>url==='/api/session'?{token:'test'}:url==='/api/inbox/history'?{error:'旧结果摘要暂时不可读'}:{libraryId:'library',items:[]}}));
+ let failing=false;const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:host=>{host.replaceChildren();if(failing)throw new Error('原恢复导航暂时不可读');const link=document.createElement('a');link.href='/?batchId=original';link.textContent='继续原任务';host.append(link);}});await home.load();
+ await tasks.querySelector('summary').click();assert.match(tasks.textContent,/旧结果摘要暂时不可读/);assert.ok(tasks.querySelectorAll('a').some(link=>link.href==='/?batchId=original'));
+ failing=true;await assert.rejects(tasks.querySelector('summary').click(),/原恢复导航暂时不可读/);failing=false;await tasks.querySelector('summary').click();assert.ok(tasks.querySelector('a'));
+});
+
+test('旧结果冲突呈现来源和依据，明确选择后才接入，库内历史可打开原恢复报告',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let chosen=null;
+ const records=[{originId:'first:source',valid:true,name:'人工第一份.md',category:'001 缓存',manuallyEdited:true,reason:'正文有效，人工确认需重审',recoveryUrl:'/task-report?batchId=first'},{originId:'second:source',valid:true,name:'人工第二份.md',category:'002 数据库',reason:'正文有效，分类依据需重审',recoveryUrl:'/task-report?batchId=second'}];
+ let item={itemId:'a',identity:'a.md',available:true,status:'legacy-conflict',legacyChoices:records,history:records};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};
+  if(url==='/api/inbox/chooseLegacy'){chosen=JSON.parse(options.body);item={...item,status:'needs-classification',suggestion:'人工第一份.md',legacyChoices:undefined};}
+  return {ok:true,json:async()=>url==='/api/inbox/history'?{records}:structuredClone({libraryId:'library',items:[item]})};
+ });
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:host=>host.append(document.createElement('p'))});await home.load();
+ assert.match(tasks.textContent,/人工第一份.md.*人工确认需重审/s);assert.match(tasks.textContent,/人工第二份.md.*分类依据需重审/s);assert.equal(chosen,null);
+ await tasks.querySelectorAll('button').find(node=>node.textContent==='采用此旧结果：人工第一份.md').click();assert.equal(chosen.originId,'first:source');assert.equal(chosen.itemId,'a');
+ await tasks.querySelector('summary').click();assert.ok(tasks.querySelectorAll('a').some(node=>node.getAttribute('href')==='/task-report?batchId=first'));assert.match(tasks.textContent,/来源：first:source/);
+});
+
+test('相同知识库 ID 的物理或来源范围改变后移除旧编辑节点、选择与草稿',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);
+ let scopeId='original',item={itemId:'old',identity:'旧文件.md',status:'reviewable',available:true,suggestion:'旧建议.md',classification:{category:'',options:['']}};
+ t.mock.method(globalThis,'fetch',async url=>({ok:true,json:async()=>url==='/api/session'?{token:'test'}:structuredClone({libraryId:'library',scopeId,items:[item]})}));
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();const selected=tasks.querySelector('article input');selected.checked=true;await selected.dispatchEvent({type:'change'});
+ const name=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 旧文件.md');name.value='未保存旧草稿.md';await name.dispatchEvent({type:'input'});
+ scopeId='replacement';item={...item,itemId:'new',identity:'新文件.md',suggestion:'新建议.md'};await home.load();
+ assert.equal(tasks.querySelectorAll('article').length,1);assert.equal(tasks.querySelectorAll('input').includes(name),false);assert.equal(tasks.querySelector('article input').checked,false);assert.equal(tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='归档名称 新文件.md').value,'新建议.md');
+});
+
 test('后台刷新独立更新另一材料进度，保留当前输入节点、焦点、光标与勾选',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);

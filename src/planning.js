@@ -76,6 +76,15 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,
+    // 旧任务正文经服务端核验后接入；原执行记录与检查点不被覆盖。
+    adoptLegacyAnalysis: input=>serial(async()=>{
+      const saved=await state(input.sourceRoot,input.libraryPath),file=await sourceFile(input.sourceRoot,input.identity),source=input.entry;
+      if(source.hash!==hash(await readFile(file))||!sameAnalysisVersion(source.analysisVersion,analysisVersion(await readModelConfig(input))))throw new Error('旧正文基线已变化');
+      const catalog=await categoryCatalog(path.join(input.libraryPath,'raw/sources')),ruleSnapshot=await classificationRules.read(input);
+      const classification={...(input.classificationValid?structuredClone(source.classification):{category:null,decision:'undetermined',tags:[],reason:'旧审核依据需要重新确认',considered:[]}),status:'needs-review',rulesHash:ruleSnapshot.rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity:ruleSnapshot.libraryIdentity,options:catalog.categories.map(value=>value.path),catalogRoot:catalog.root,catalogHash:catalog.hash};
+      const entry={identity:input.identity,hash:source.hash,kind:source.kind,analysisVersion:source.analysisVersion,segments:source.segments,analysis:source.analysis,suggestion:source.confirmedName??source.suggestion,classification,tags:source.tags??[],reviewRequired:true};
+      saved.data.entries[input.identity]=entry;await persist(saved.file,saved.data);return entry;
+    }),
     getClassificationRules:async input=>{await state(input.sourceRoot,input.libraryPath);const ruleSnapshot=await classificationRules.read(input),{rules,rulesHash,libraryIdentity}=ruleSnapshot;const catalog=rules.length?await categoryCatalog(input.categoryRoot??path.join(input.libraryPath,'raw/sources')):null;return {classificationRules:rules.map(rule=>({...rule,status:classificationRuleState(rule,catalog)})),rulesHash,effectiveRulesHash:effectiveClassificationRulesHash(ruleSnapshot,catalog),libraryIdentity};},
     resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
     revalidateClassification:input=>serial(async()=>{
