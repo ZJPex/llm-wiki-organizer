@@ -38,7 +38,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
  const view=value=>({libraryId:value.libraryId,revision:value.revision,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
-  list:input=>serial(input.id,async()=>{await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return view(await save(saved));}),
+  list:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return {...view(await save(saved)),...(batches.getClassificationRules?await batches.getClassificationRules(library):{classificationRules:[]})};}),
   scan:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),discovered=await discoverSources(library),seen=new Set();await sync(saved);
    for(const source of discovered.sources){
@@ -72,7 +72,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);const [item]=select(saved,[input.itemId]);
    if(!['reviewable','confirmed','needs-classification'].includes(item.status))batchFail('REVIEW_REQUIRED','请等待正文分析后再保存审核');
    const batch=await snapshot(item.batchId);
-   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,manuallyEdited:input.manuallyEdited===true});
+   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,saveClassificationRule:input.saveClassificationRule,ruleText:input.ruleText,acceptNewCategory:input.acceptNewCategory,newCategoryHash:input.newCategoryHash,manuallyEdited:input.manuallyEdited===true});
    await sync(saved);return view(await save(saved));
   }),
   archive:input=>serial(input.id,async()=>{

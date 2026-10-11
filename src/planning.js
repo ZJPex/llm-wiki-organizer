@@ -13,6 +13,7 @@ import {themeTags} from './classification-result.js';
 import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 import {compileNewCategory,checkedNewCategory} from './new-categories.js';
+import {createClassificationRules} from './classification-rules.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
   if (typeof name !== 'string' || name.length > 240 || !/\.md$/i.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) || !name.slice(0, -3).trim()) throw new Error('名称不符合 Windows Markdown 文件名规则');
@@ -53,6 +54,7 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 }
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
+  const classificationRules=createClassificationRules({stateDirectory});
   const modelConcurrency=createModelConcurrency({stateDirectory});
   const modelGenerate=generate;generate=(config,request)=>withModelContext({...modelContext(),priority:request.stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(config,request)));
   // 串行状态变更，避免同一进程内审核互相覆盖。
@@ -73,6 +75,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,
+    getClassificationRules:async input=>{await state(input.sourceRoot,input.libraryPath);const {rules,rulesHash,libraryIdentity}=await classificationRules.read(input);return {classificationRules:rules,rulesHash,libraryIdentity};},
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -201,9 +204,10 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (entry.hash !== hash(await readFile(file, 'utf8'))) throw new Error('源文件变化，请重新分析');
       await state(input.sourceRoot, input.categoryRoot);
       const catalog = await categoryCatalog(input.categoryRoot);
+      const ruleSnapshot=await classificationRules.read(input),validRules=ruleSnapshot.rules.filter(rule=>catalog.categories.some(category=>category.path===rule.category));
       const config = entry.analysis && !entry.analysis.uncertain ? await readModelConfig(input) : null;
       if(config&&!sameAnalysisVersion(entry.analysisVersion,analysisVersion(config)))throw new Error('全文分析依据已失效，请先重新分析');
-      const recommendation = await recommendCategory({ entry, catalog, config, generate, onProgress:input.onProgress });
+      const recommendation = await recommendCategory({ entry, catalog, config, generate, classificationRules:validRules,onProgress:input.onProgress });
       let newCategoryResult;
       if(recommendation.decision==='missing-category'&&!modelContext()?.shouldPause?.()){
         await input.onProgress?.({stage:'new-category'});
@@ -214,6 +218,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
         const latest=await state(input.sourceRoot,input.libraryPath),current=latest.data.entries[input.identity];
         if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
         if(config&&(!sameAnalysisVersion(current.analysisVersion,analysisVersion(config))||!sameAnalysisVersion(analysisVersion(await readModelConfig(input)),analysisVersion(config))))throw new Error('分类规划期间模型配置变化，请重新分析');
+        if((await classificationRules.read(input)).rulesHash!==ruleSnapshot.rulesHash)throw Object.assign(new Error('分类规划期间偏好变化，请重新检索分类；正文分析保留'),{code:'STALE_RULES'});
         if(current.classification?.status==='confirmed')return current;
         if(newCategoryResult){
           const compiled=compileNewCategory(newCategoryResult,catalog,latest.data.newCategories??={});
@@ -221,7 +226,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
           if(compiled.newCategory){latest.data.newCategories[compiled.newCategory.proposalId]=compiled.newCategory;recommendation.category=compiled.newCategory.path;}
           else if(typeof compiled.category==='string')recommendation.decision='existing';
         }
-        current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.classification={...recommendation,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
         current.tags=themeTags(recommendation.tags);
         delete current.frozenPlan;await persist(latest.file,latest.data);return current;
       });
@@ -237,6 +242,8 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (entry.confirmedName && entry.confirmedName !== name) throw new Error('已确认名称保持稳定');
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
+      let ruleSnapshot=await classificationRules.read(input);
+      if(entry.classification.rulesHash?entry.classification.rulesHash!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)throw Object.assign(new Error('分类偏好已变化，请重新检索分类；正文分析保留'),{code:'STALE_RULES'});
       let newCategory;
       if(entry.classification.newCategory?.path===input.category){
         newCategory=checkedNewCategory(entry.classification.newCategory);
@@ -245,8 +252,9 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const target = newCategory?path.join(catalog.root,newCategory.path,name):await finalTarget(catalog, input.category, name, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
       const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target,...(newCategory?{newCategory}:{}) };
-      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
+      if(input.saveClassificationRule===true){if(newCategory)throw Object.assign(new Error('请先归档落地新类别，再为实际已有类别保存后续规则'),{code:'INVALID_RULE_CATEGORY'});ruleSnapshot=await classificationRules.save({...input,category:input.category,expectedRulesHash:ruleSnapshot.rulesHash});}
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags,categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target,...(newCategory?{newCategory}:{}) };
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity,tags,newCategoryAccepted:!!newCategory,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),
@@ -258,9 +266,11 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const catalog = await categoryCatalog(entry.classification.catalogRoot);
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
       validateName(entry.confirmedName);
+      const ruleSnapshot=await classificationRules.read(input);
+      if(entry.classification.rulesHash?entry.classification.rulesHash!==ruleSnapshot.rulesHash:ruleSnapshot.rules.length)throw Object.assign(new Error('分类偏好已变化，请重新检索并审核'),{code:'STALE_RULES'});
       const target = await finalTarget(catalog, input.category, entry.confirmedName, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name: entry.confirmedName, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash,rulesHash:ruleSnapshot.rulesHash,libraryIdentity:ruleSnapshot.libraryIdentity, finalPath: target };
       entry.frozenPlan = { ...frozen, planHash: planDigest(frozen) };
       entry.classification = { ...entry.classification, category: input.category, finalPath: target, status: 'confirmed' };
       await persist(saved.file, saved.data);

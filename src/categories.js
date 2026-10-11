@@ -31,7 +31,7 @@ export async function categoryCatalog(root) {
   return { root: canonical, categories, hash: digest(categories) };
 }
 
-export async function recommendCategory({ entry, catalog, config, generate, onProgress }) {
+export async function recommendCategory({ entry, catalog, config, generate, classificationRules=[],onProgress }) {
   if (!entry.analysis || entry.analysis.uncertain || !['body', 'navigation'].includes(entry.kind)) return { status: 'needs-review', category: null, decision:'insufficient-evidence',tags:[],reason: '正文信息或可核验引用不足，保留原处', considered: [] };
   const content = { summary: entry.analysis.summary, evidence: entry.analysis.evidence };
   const selected = new Set(),unmatched=[];
@@ -39,7 +39,7 @@ export async function recommendCategory({ entry, catalog, config, generate, onPr
   for (let start = 0; start < catalog.categories.length; start += 60) {
     await onProgress?.({stage:'search',step:Math.floor(start/60)+1,totalSteps:Math.ceil(catalog.categories.length/60)});
     const candidates = catalog.categories.slice(start, start + 60).map(({ path, aliases }) => ({ path, aliases }));
-    const result = await generate(config, { stage: 'category-search', content, categories: candidates });
+    const result = await generate(config, { stage: 'category-search', content, categories: candidates,classificationRules });
     if (!Array.isArray(result.candidates) || result.candidates.length > 8 || result.candidates.some(p => typeof p !== 'string' || !candidates.some(c => c.path === p))) throw new Error('分类检索必须返回现有候选');
     if(result.decision!==undefined&&!['existing','missing-category','cross-topic','insufficient-evidence','undetermined'].includes(result.decision))throw new Error('分类检索判定类型无效');
     result.candidates.forEach(p => selected.add(p));
@@ -52,7 +52,7 @@ export async function recommendCategory({ entry, catalog, config, generate, onPr
   if (selected.size > 24) return { status: 'needs-review', category: null, decision:'undetermined',tags:[],reason: '相关类别过多，请人工缩小分类范围', considered: [...selected] };
   const candidates = catalog.categories.filter(c => selected.has(c.path));
   await onProgress?.({stage:'choice'});
-  const result = await generate(config, { stage: 'category-choice', content, categories: candidates });
+  const result = await generate(config, { stage: 'category-choice', content, categories: candidates,classificationRules });
   if (typeof result.reason !== 'string' || typeof result.uncertain !== 'boolean' || (result.category !== null && !candidates.some(c => c.path === result.category))) throw new Error('分类选择响应无效');
   if (!Array.isArray(result.evidence) || result.evidence.some(e => typeof e !== 'string' || !content.evidence.some(source => source.includes(e)) || !e)) throw new Error('分类理由必须有既有分析证据');
   if(result.decision!==undefined&&!['existing','missing-category','cross-topic','insufficient-evidence','undetermined'].includes(result.decision))throw new Error('分类判定类型无效');

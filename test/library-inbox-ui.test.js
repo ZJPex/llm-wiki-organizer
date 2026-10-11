@@ -55,3 +55,14 @@ test('待定方案呈现候选与理由，根分类须明确选择，不能把�
  assert.equal(tasks.querySelector('select').value,'__unselected__');await button().click();assert.equal(reviews,0);assert.match(tasks.textContent,/请明确选择主分类/);
  const category=tasks.querySelector('select');category.value='';await category.dispatchEvent({type:'change'});await button().click();assert.equal(reviews,1);
 });
+
+test('当前文件审核默认不推广，明确勾选和填写规则后才提交知识库偏好，刷新保留草稿',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);const reviews=[];
+ const item={itemId:'rule',identity:'偏好.md',status:'reviewable',available:true,suggestion:'偏好.md',reviewBasis:{sourceHash:'source',catalogHash:'catalog'},classification:{category:'001 缓存',options:['','001 缓存','002 数据库']}};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};if(url==='/api/inbox/review')reviews.push(JSON.parse(options.body));return {ok:true,json:async()=>({libraryId:'library',items:[item]})};});
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();assert.match(tasks.textContent,/默认只修改当前文件/);assert.match(tasks.textContent,/仍需逐文件审核/);
+ const checkbox=tasks.querySelector('article').querySelector('input');checkbox.checked=true;await checkbox.dispatchEvent({type:'change'});const saveButton=()=>tasks.querySelectorAll('button').find(node=>node.textContent==='保存所选审核');await saveButton().click();assert.notEqual(reviews[0].saveClassificationRule,true);
+ const selected=tasks.querySelectorAll('input').find(node=>node.getAttribute('aria-label')==='保存后续分类规则 偏好.md');assert.equal(selected.checked,false);selected.checked=true;await selected.dispatchEvent({type:'change'});const instruction=tasks.querySelector('textarea');assert.equal(instruction.disabled,false);instruction.value='缓存一致性优先归属数据库';await instruction.dispatchEvent({type:'input'});await home.load();assert.equal(tasks.querySelector('textarea').value,'缓存一致性优先归属数据库');
+ await saveButton().click();assert.equal(reviews[1].saveClassificationRule,true);assert.equal(reviews[1].ruleText,'缓存一致性优先归属数据库');
+});

@@ -1,5 +1,6 @@
 import {element} from './batch-ui.js';
 import {appendNewCategoryReview} from './new-category-review.js';
+import {appendClassificationRuleReview,appendClassificationRules} from './classification-rule-review.js';
 
 export async function requestInbox(action,input){
  const {token}=await(await fetch('/api/session')).json();
@@ -11,22 +12,23 @@ const control=(label,action,primary=false)=>{const button=element('button',label
 
 // 草稿与勾选独立于后台快照，轮询不覆盖用户尚未保存的修改。
 export function createLibraryInboxHome({tasks,featured,more,getLibrary,history}){
- let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,writersPaused=false,analysisProgress=null;
+ let items=[],generation=0,busy=false,selected=new Set(),drafts=new Map(),libraryId=null,writersPaused=false,analysisProgress=null,classificationRules=[];
  const message=element('p');message.setAttribute('role','status');
  async function run(action){if(busy)return;busy=true;const version=generation;message.textContent='正在处理…';try{await action();if(version===generation)message.textContent='操作已保存';}catch(error){if(version===generation)message.textContent=error.message;}finally{if(version===generation){busy=false;render();}}}
  const chosen=()=>items.filter(item=>selected.has(item.itemId));
  async function load(action='list'){
   const library=getLibrary();if(!library?.valid){clear(library?'设置已失效，请先修正设置。':'请先保存知识库设置。');return;}
   const version=generation,result=await requestInbox(action,{id:library.id});if(version!==generation||getLibrary()?.id!==library.id)return;
-  libraryId=library.id;items=result.items;analysisProgress=result.analysisProgress;for(const item of items)if(!['reviewable','needs-classification','confirmed'].includes(item.status))drafts.delete(item.itemId);render();
+  libraryId=library.id;items=result.items;analysisProgress=result.analysisProgress;classificationRules=result.classificationRules??classificationRules;for(const item of items)if(!['reviewable','needs-classification','confirmed'].includes(item.status))drafts.delete(item.itemId);render();
  }
- function clear(text='正在加载收件箱…'){generation++;busy=false;items=[];selected=new Set();drafts=new Map();libraryId=null;tasks.replaceChildren(element('p',text));featured.replaceChildren();more.hidden=true;}
+ function clear(text='正在加载收件箱…'){generation++;busy=false;items=[];selected=new Set();drafts=new Map();classificationRules=[];libraryId=null;tasks.replaceChildren(element('p',text));featured.replaceChildren();more.hidden=true;}
  function render(){
   if(libraryId!==getLibrary()?.id)return;
   tasks.replaceChildren();featured.replaceChildren();more.hidden=true;
   const counts=items.reduce((value,item)=>(value[item.status]=(value[item.status]??0)+1,value),{});
   featured.className='home-guidance';featured.append(element('p',`${items.filter(item=>item.status!=='archived').length} 份未归档 · 可审核 ${counts.reviewable??0} · 分类待定 ${counts['needs-classification']??0} · 已确认 ${counts.confirmed??0} · 失败 ${counts.failed??0}`));
   if(analysisProgress)featured.append(element('p',`分析处理完成 ${analysisProgress.completed} / ${analysisProgress.total} · 信息不足 ${counts['needs-information']??0} · 已归档 ${counts.archived??0}`));
+  appendClassificationRules(featured,classificationRules);
   const toolbar=element('div');toolbar.className='review-toolbar';
   const analyze=control('开始整理所选文件',()=>run(async()=>{await requestInbox('start',{id:libraryId,itemIds:chosen().map(item=>item.itemId)});await load();}),true);
   const review=control('保存所选审核',()=>run(async()=>{for(const item of chosen()){if(!['reviewable','needs-classification','confirmed'].includes(item.status))continue;const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[]};if(draft.category===null)throw new Error('请明确选择主分类');await requestInbox('review',{id:libraryId,itemId:item.itemId,...draft,manuallyEdited:drafts.has(item.itemId)});drafts.delete(item.itemId);}await load();}));
@@ -57,6 +59,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
     const tags=element('input');tags.value=(draft.tags??[]).join('、');tags.setAttribute('aria-label','主题标签 '+item.identity);tags.oninput=()=>{draft.tags=tags.value.split(/[,，、]/).map(value=>value.trim()).filter(Boolean);drafts.set(item.itemId,draft);};const tagsLabel=element('label','其他主题标签（用顿号或逗号分隔）');tagsLabel.append(tags);card.append(tagsLabel);
     if(item.classification?.reason)card.append(element('p',item.classification.reason));
     appendNewCategoryReview(card,item,draft,()=>drafts.set(item.itemId,draft));
+    appendClassificationRuleReview(card,item,draft,()=>drafts.set(item.itemId,draft));
    }else if(item.status==='archived'){card.append(element('p','归档位置：'+item.targetPath),element('p','主题标签：'+(item.tags?.join('、')||'无')));appendNewCategoryReview(card,item,{},()=>{});}
    tasks.append(card);
   }
