@@ -140,7 +140,7 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
  const jobs=createBatchJobs({store,view,step:analyzeNext,classify:classifyNext,proposeTree:treeAction,
   checkIdle:batch=>{assertExecutionScene(batch);assertReviewRefreshAllowed(batch);assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有批次正在处理');if(batch.slices.some(slice=>slice.status==='applying'))batchFail('EXECUTION_INTERRUPTED','原库执行已开始，请先处理执行结果');},
   prepare:async job=>{const batch=await store.get(job.batchId);await store.update(batch.batchId,batch.revision,async record=>{
-   await refreshReviewState(record,{planning});
+   await refreshReviewState(record,{planning,checkAnalysisConfig:true});
    return record;
   });}
  });
