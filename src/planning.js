@@ -8,6 +8,7 @@ import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
+import {themeTags} from './classification-result.js';
 import {createModelConcurrency,modelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -177,6 +178,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
         if(!current||current.hash!==entry.hash||hash(await readFile(file,'utf8'))!==entry.hash||(await categoryCatalog(input.categoryRoot)).hash!==catalog.hash)throw new Error('分类规划期间基线变化');
         if(current.classification?.status==='confirmed')return current;
         current.classification={...recommendation,catalogRoot:catalog.root,catalogHash:catalog.hash,options:catalog.categories.map(c=>c.path),finalPath:recommendation.category===null?null:path.join(catalog.root,recommendation.category,current.confirmedName??current.suggestion??path.basename(current.identity))};
+        current.tags=themeTags(recommendation.tags);
         delete current.frozenPlan;await persist(latest.file,latest.data);return current;
       });
     }),
@@ -193,8 +195,9 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       if (catalog.hash !== entry.classification.catalogHash) throw new Error('分类树或说明已变化，请重新规划');
       const target = await finalTarget(catalog, input.category, name, file);
       if (Object.values(saved.data.entries).some(e => e.identity !== entry.identity && e.frozenPlan?.finalPath.toLowerCase() === target.toLowerCase())) throw new Error('批次内目标重名');
-      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
-      Object.assign(entry, {confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,category:input.category,finalPath:target,status:'confirmed'}});
+      const tags=themeTags(input.tags??entry.tags??entry.classification.tags);
+      const frozen = { schemaVersion: 1, identity: entry.identity, sourcePath: file, sourceHash: entry.hash, name, category: input.category, tags, categoryRoot: catalog.root, catalogHash: catalog.hash, finalPath: target };
+      Object.assign(entry, {tags,confirmedName:name,reviewRequired:false,frozenPlan:{...frozen,planHash:planDigest(frozen)},classification:{...entry.classification,tags,decision:entry.classification.category===input.category?entry.classification.decision:'manual',category:input.category,finalPath:target,status:'confirmed'}});
       await persist(saved.file, saved.data);
       return entry;
     }),

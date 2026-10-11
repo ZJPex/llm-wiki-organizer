@@ -4,6 +4,7 @@ import {lstat} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {createBatchStore,batchFail} from './batch-store.js';
 import {discoverSources} from './batch-sources.js';
+import {suggestionProgress} from './classification-result.js';
 
 const queues=new Map();
 // 文件身份与路径分开保存；扫描只发现来源，不发起模型请求。
@@ -18,19 +19,23 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(!groups.has(item.batchId))groups.set(item.batchId,await snapshot(item.batchId));
    const batch=groups.get(item.batchId),source=batch.sources.find(value=>value.sourceId===item.sourceId);if(!source)continue;
    item.analysis=source.analysis;item.suggestion=source.confirmedName??source.suggestion??source.analysis?.suggestion;item.classification=source.classification;item.targetPath=source.targetPath??source.classification?.finalPath;item.manuallyEdited=source.manuallyEdited;item.error=source.classificationError??source.skipReason;
+   item.tags=source.tags??source.classification?.tags??[];item.kind=source.kind;
+   if(source.status==='needs-information'&&!item.classification)item.classification={category:null,decision:'insufficient-evidence',tags:[],reason:source.skipReason??'正文信息或可核验引用不足，保留原处',considered:[],evidence:[]};
    item.stage=batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined;
    if(source.status==='succeeded'){item.status='archived';item.currentPath=source.currentPath;item.identity=source.currentIdentity;const stat=await lstat(source.currentPath,{bigint:true});item.fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);}
    else if(!item.available)item.status='missing';
+   else if(['excluded','skipped'].includes(source.status))item.status='excluded';
+   else if(source.status==='needs-analysis'){item.status='pending';delete item.classification;delete item.targetPath;delete item.suggestion;delete item.analysis;delete item.tags;}
    else if(source.status==='reviewed')item.status='confirmed';
    else if(source.status.endsWith('failed'))item.status='failed';
-   else if(source.analysis&&!source.analysis.uncertain){item.status=source.classification?.category!==null&&source.classification?.category!==undefined&&item.suggestion?'reviewable':'needs-classification';}
    else if(source.status==='needs-information'||source.status==='blocked')item.status='needs-information';
+   else if(source.analysis&&!source.analysis.uncertain){item.status=source.classification?.category!==null&&source.classification?.category!==undefined&&item.suggestion?'reviewable':'needs-classification';}
    else item.status=['running','pausing'].includes(batch.analysisJob.status)?'analyzing':['interrupted','paused','failed'].includes(batch.analysisJob.status)?'paused':'waiting';
   }
   return groups;
  }
  const save=saved=>store.update(saved.batchId,saved.revision,()=>saved);
- const view=value=>({libraryId:value.libraryId,revision:value.revision,items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
+ const view=value=>({libraryId:value.libraryId,revision:value.revision,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
   list:input=>serial(input.id,async()=>{await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return view(await save(saved));}),
@@ -41,7 +46,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
     let item=saved.items.find(value=>value.fileIdentity===fileIdentity);
     if(!item){item={itemId:randomUUID(),libraryId:input.id,fileIdentity,status:'pending',history:[]};saved.items.push(item);}
     if(item.status==='archived'){seen.add(item.itemId);continue;}
-    if(item.hash&&item.hash!==source.hash){item.history.push({hash:item.hash,identity:item.identity,batchId:item.batchId,sourceId:item.sourceId});for(const field of ['batchId','sourceId','analysis','classification','suggestion','targetPath','manuallyEdited','stage'])delete item[field];item.status='pending';item.invalidatedReason='源正文已变化，请重新处理';}
+    if(item.hash&&item.hash!==source.hash){item.history.push({hash:item.hash,identity:item.identity,batchId:item.batchId,sourceId:item.sourceId});for(const field of ['batchId','sourceId','analysis','classification','suggestion','targetPath','manuallyEdited','stage','tags','kind'])delete item[field];item.status='pending';item.invalidatedReason='源正文已变化，请重新处理';}
     else if(item.batchId&&item.currentPath!==source.currentPath){const batch=await snapshot(item.batchId);await batches.rebindSource({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,currentPath:source.currentPath});delete item.classification;delete item.targetPath;item.status='needs-classification';item.invalidatedReason='来源位置已变化，请复核分类与归档位置';}
     if(item.status==='missing'&&!item.batchId)item.status='pending';
     Object.assign(item,{identity:source.identity,currentPath:source.currentPath,hash:source.hash,ingestStatus:source.ingestStatus,available:true});seen.add(item.itemId);
@@ -67,7 +72,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);const [item]=select(saved,[input.itemId]);
    if(!['reviewable','confirmed','needs-classification'].includes(item.status))batchFail('REVIEW_REQUIRED','请等待正文分析后再保存审核');
    const batch=await snapshot(item.batchId);
-   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,action:'confirmPlan',name:input.name,category:input.category,manuallyEdited:input.manuallyEdited===true});
+   await batches.reviewItem({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,action:'confirmPlan',name:input.name,category:input.category,tags:input.tags,manuallyEdited:input.manuallyEdited===true});
    await sync(saved);return view(await save(saved));
   }),
   archive:input=>serial(input.id,async()=>{
@@ -76,7 +81,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(chosen.some(item=>!['confirmed','archived'].includes(item.status)))batchFail('REVIEW_REQUIRED','请先保存所选文件审核');
    if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','请等待分析完成后归档');
    if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>90)batchFail('INVALID_REQUEST','归档请求缺少稳定标识');
-   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,manuallyEdited:item.manuallyEdited===true}))});}
+   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,manuallyEdited:item.manuallyEdited===true}))});}
    await sync(saved);return view(await save(saved));
   }),
  };
