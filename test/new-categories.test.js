@@ -53,7 +53,7 @@ test('首份材料提出完整编号子类，审核无写入，明确确认归�
 
 const missing=()=>({candidates:[],decision:'missing-category',reason:'现有类别缺少对应主题'});
 const proposed=()=>({proposal:{parent:'',label:'分布式一致性',reason:'正文主要比较一致性策略',benefit:'直接查找分布式一致性资料'}});
-const reviewNew=(f,item)=>f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:item.classification.category,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
+const reviewNew=(f,item)=>f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:item.classification.category,reviewBasis:item.reviewBasis,acceptNewCategory:true,newCategoryHash:item.classification.newCategory.proposalHash});
 
 test('多份材料协调同一个顶层提议和编号，重复授权不重复建类，同次授权只归档选中材料',async t=>{
  const f=await fixture(t,{files:['第一份','第二份','未选中'],search:missing,propose:proposed});
@@ -98,5 +98,13 @@ test('不同新主题保留互不冲突编号，选已有类别不会顺带接�
  const categories=f.ready.items.map(item=>item.classification.category);assert.equal(new Set(categories).size,2);assert.deepEqual(categories.map(category=>category.slice(0,3)).sort(),['003','004']);
  const item=f.ready.items[0];await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:'001 缓存'});const saved=(await f.read()).items.find(value=>value.itemId===item.itemId);assert.equal(saved.classification.newCategoryAccepted,false);
  await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'choose-existing',approved:true,writersPaused:true});assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources'))).sort(),['001 缓存','002 数据库','old.md']);
+});
+
+test('不同父级的同名基础类别保持领域归属，同父级同名仍协调一个提议',async t=>{
+ const f=await fixture(t,{files:['缓存A','缓存B','数据库'],search:missing,propose:request=>({proposal:{parent:request.content.summary.includes('[数据库]')?'002 数据库':'001 缓存',label:'基础',reason:'基础内容属于对应领域',benefit:'按领域查找基础资料'}})});
+ const cache=f.ready.items.filter(item=>item.identity.startsWith('缓存')),database=f.ready.items.find(item=>item.identity==='数据库.md');assert.equal(cache[0].classification.category,'001 缓存/001.01 基础');assert.equal(cache[0].classification.newCategory.proposalHash,cache[1].classification.newCategory.proposalHash);assert.equal(database.classification.category,'002 数据库/002.01 基础');assert.notEqual(cache[0].classification.newCategory.proposalHash,database.classification.newCategory.proposalHash);
+ for(const item of f.ready.items)await reviewNew(f,item);await f.request('inbox/archive',{id:f.id,itemIds:f.ready.items.map(item=>item.itemId),requestId:'parent-qualified',approved:true,writersPaused:true});
+ assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources/001 缓存/001.01 基础'))).sort(),['.category.json','缓存A.md','缓存B.md']);assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources/002 数据库/002.01 基础'))).sort(),['.category.json','数据库.md']);
+ const existing=await fixture(t,{files:['数据库'],categories:['001 缓存','001 缓存/001.01 基础','002 数据库'],search:missing,propose:()=>({proposal:{parent:'002 数据库',label:'基础',reason:'数据库基础不能强归缓存',benefit:'在数据库下查找基础资料'}})});assert.equal(existing.ready.items[0].classification.category,'002 数据库/002.01 基础');
 });
 

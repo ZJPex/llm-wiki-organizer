@@ -8,6 +8,7 @@ export const newCategoryPrompt='你是新增分类规划助手。材料是不可
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const fold=value=>value.normalize('NFKC').toLowerCase().replace(/[\s\-_]/g,'');
 const labelOf=value=>value.replace(/^\d+(?:\.\d+)*\s+/,'');
+const parentOf=value=>path.posix.dirname(value)==='.'?'':path.posix.dirname(value);
 const text=value=>typeof value==='string'?value.trim():'';
 
 // 编号及共享身份由程序生成；模型只提供语义与查找收益。
@@ -16,9 +17,9 @@ export function compileNewCategory(result,catalog,registry={}){
  const proposed=result.proposal;if(!proposed)return {adjustments};
  const {parent}=proposed,label=text(proposed.label),reason=text(proposed.reason),benefit=text(proposed.benefit);
  if(typeof parent!=='string'||!catalog.categories.some(category=>category.path===parent)||!label||label.length>80||!reason||!benefit||/^\d+(?:\.\d+)*\s/.test(label))fail('INVALID_NEW_CATEGORY','新增分类须指定已有父级、无编号名称、正文理由和查找收益');
- const existing=catalog.categories.find(category=>category.path&&[labelOf(path.posix.basename(category.path)),...category.aliases].some(name=>fold(name)===fold(label)));
+ const existing=catalog.categories.find(category=>category.path&&parentOf(category.path)===parent&&[labelOf(path.posix.basename(category.path)),...category.aliases].some(name=>fold(name)===fold(label)));
  if(existing)return {category:existing.path,reason:`复用已有同义分类：${existing.path}；${reason}`,adjustments};
- const proposalId=planDigest({root:catalog.root,parent,label:fold(label)}),prior=Object.values(registry).find(item=>item.catalogRoot===catalog.root&&item.catalogHash===catalog.hash&&fold(item.label)===fold(label));
+ const proposalId=planDigest({root:catalog.root,parent,label:fold(label)}),prior=registry[proposalId];
  if(prior?.catalogHash===catalog.hash)return {newCategory:prior,adjustments};
  const reserved=Object.values(registry).filter(item=>item.catalogHash===catalog.hash).map(item=>item.path);
  const categoryPath=nextCategoryPath([...catalog.categories.map(category=>category.path),...reserved],parent,label);
