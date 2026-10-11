@@ -62,7 +62,8 @@ test('多份材料协调同一个顶层提议和编号，重复授权不重复�
  const chosen=f.ready.items.filter(item=>item.identity!=='未选中.md'),input={id:f.id,itemIds:chosen.map(item=>item.itemId),requestId:'shared-proposal',approved:true,writersPaused:true};
  await f.request('inbox/archive',input);await f.request('inbox/archive',input);const result=await f.read();assert.equal(result.items.filter(item=>item.status==='archived').length,2);
  assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources/003 分布式一致性'))).sort(),['.category.json','第一份.md','第二份.md']);assert.match(await readFile(path.join(f.sourceRoot,'未选中.md'),'utf8'),/未选中/);
- await assert.rejects(reviewNew(f,result.items.find(item=>item.identity==='未选中.md')));assert.notEqual((await f.read()).items.find(item=>item.identity==='未选中.md').status,'archived');
+ const retained=result.items.find(item=>item.identity==='未选中.md');assert.equal(retained.status,'needs-classification');assert.equal(retained.classification,undefined);assert.ok(result.reviewCheck.classificationNeededItemIds.includes(retained.itemId));
+ await assert.rejects(reviewNew(f,f.ready.items.find(item=>item.itemId===retained.itemId)));assert.notEqual((await f.read()).items.find(item=>item.identity==='未选中.md').status,'archived');
 });
 
 test('同义分类优先复用，不为首份材料重复创建已有类别，调整提示不执行历史目录改名',async t=>{
@@ -75,7 +76,7 @@ test('同义分类优先复用，不为首份材料重复创建已有类别，�
 test('分类落地失败保留两份来源与持久证据，重启后只经公开恢复入口完成失败依赖',async t=>{
  let interrupted=true;const f=await fixture(t,{files:['第一份','第二份'],search:missing,propose:proposed,checkpoint:async stage=>{if(stage==='category-created'&&interrupted){interrupted=false;throw new Error('合成类别落地中断');}}});
  for(const item of f.ready.items)await reviewNew(f,item);
- await f.request('inbox/archive',{id:f.id,itemIds:f.ready.items.map(item=>item.itemId),requestId:'interrupted-category',approved:true,writersPaused:true});
+ const blocked=await f.request('inbox/archive',{id:f.id,itemIds:f.ready.items.map(item=>item.itemId),requestId:'interrupted-category',approved:true,writersPaused:true});assert.equal(blocked.reviewCheck.status,'blocked');
  const page=await f.request('batches/list'),batch=await f.request('batches/get',{batchId:page.records[0].batchId}),report=await f.request('batches/getReport',{batchId:batch.batchId});
  assert.equal(report.counts.succeeded,0);assert.equal(report.counts.failed,1);assert.match(await readFile(path.join(f.sourceRoot,'第一份.md'),'utf8'),/第一份/);assert.match(await readFile(path.join(f.sourceRoot,'第二份.md'),'utf8'),/第二份/);
  const evidence=report.evidence.find(item=>item.archiveJournalPath),journal=JSON.parse(await readFile(evidence.archiveJournalPath,'utf8'));assert.equal(journal.status,'failed');assert.equal(journal.newCategories[0].proposalHash,f.ready.items[0].classification.newCategory.proposalHash);assert.ok(journal.categoryEvents.some(item=>item.status==='created'));

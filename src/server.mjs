@@ -52,7 +52,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       }
       const workspaceAction = /^\/api\/workspace\/(list|save|create|categories)$/.exec(req.url)?.[1];
       const concurrencyAction=/^\/api\/model-concurrency\/(get|set)$/.exec(req.url)?.[1];
-      const inboxAction = /^\/api\/inbox\/(scan|list|start|review|archive|chooseLegacy|history)$/.exec(req.url)?.[1];
+      const inboxAction = /^\/api\/inbox\/(scan|list|start|review|archive|recheck|chooseLegacy|history)$/.exec(req.url)?.[1];
       const planningAction = /^\/api\/planning\/(analyze|confirm|list|classify|confirmCategory|evolve|confirmEvolution)$/.exec(req.url)?.[1];
       const batchAction = /^\/api\/batches\/(create|get|getReport|list|startAnalysis|pauseAnalysis|continueAnalysis|startHistoryValidation|continueHistoryValidation|applyHistoryPlan|queryHistoryApplication|analyzeNext|classifyNext|confirmRecommendedCategories|confirmPlans|refreshReview|confirmNewArchive|reviewItem|treeAction|prepareSlice|replanSlice|validateSlice|cancelSlice|prepareOriginal|applySlice)$/.exec(req.url)?.[1];
       const recoveryAction = /^\/api\/recovery\/(inspect|plan|execute|get)$/.exec(req.url)?.[1];

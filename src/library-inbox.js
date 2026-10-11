@@ -57,7 +57,18 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   if(valid.length){const candidate=valid.sort((a,b)=>a.originId.localeCompare(b.originId))[0],adopted=await batches.adoptLegacy(library,item,candidate.originId);Object.assign(item,{batchId:adopted.batchId,sourceId:adopted.sourceId,legacyOrigin:candidate.originId,invalidatedReason:candidate.reason});delete item.legacyChoices;await sync(saved);}
   else if(candidates.length)item.invalidatedReason=candidates.map(value=>value.reason).join('；');
  }
- const view=value=>({libraryId:value.libraryId,revision:value.revision,scopeId:planDigest(value.scope),analysisActive:value.analysisActive??false,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
+ async function recheck(saved){
+  const groups=await sync(saved);if(saved.analysisActive)batchFail('INBOX_BUSY','请先安全暂停并等待在途结果保存后复核');
+  const checked=[];for(const batch of groups.values())checked.push(await batches.refreshReview({batchId:batch.batchId,revision:batch.revision}));
+  await sync(saved);
+  const mapIds=(batch,field)=>{
+   const check=batch.reviewCheck,ids=field==='resumeSourceIds'?[...(check?.analysisNeededSourceIds??[]),...(check?.classificationNeededSourceIds??[])].filter(id=>!check?.resumeSourceIds||check.resumeSourceIds.includes(id)):check?.[field]??[];
+   return saved.items.filter(item=>item.batchId===batch.batchId&&ids.includes(item.sourceId)).map(item=>item.itemId);
+  };
+  saved.reviewCheck={status:'checked',checkedAt:new Date().toISOString(),sharedValidationStale:checked.some(batch=>batch.reviewCheck?.sharedValidationStale),...Object.fromEntries([['affectedItemIds','affectedSourceIds'],['retainedItemIds','retainedClassificationSourceIds'],['analysisNeededItemIds','analysisNeededSourceIds'],['classificationNeededItemIds','classificationNeededSourceIds'],['reviewedItemIds','reviewedSourceIds'],['archivedItemIds','archivedSourceIds'],['resumeItemIds','resumeSourceIds']].map(([field,sourceField])=>[field,checked.flatMap(batch=>mapIds(batch,sourceField))]))};
+ }
+ const view=value=>({libraryId:value.libraryId,revision:value.revision,scopeId:planDigest(value.scope),analysisActive:value.analysisActive??false,reviewCheck:value.reviewCheck?{...value.reviewCheck,status:value.analysisActive?'waiting-for-safe-pause':value.reviewCheck.status}:null,analysisProgress:{total:value.items.filter(item=>item.batchId).length,completed:value.items.filter(item=>item.batchId&&(item.analysis||item.status==='needs-information')).length,remaining:value.items.filter(item=>['waiting','analyzing','paused'].includes(item.status)).length,failed:value.items.filter(item=>item.status==='failed').length},suggestionProgress:suggestionProgress(value.items),items:value.items.map(({fileIdentity,batchId,sourceId,...item})=>item)});
+
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
   history:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id),saved=await records(input.id),history=[...await batches.legacyHistory(library),...saved.flatMap(value=>value.items).flatMap(item=>item.history??[])];return {libraryId:input.id,records:[...new Map(history.filter(value=>value.originId).map(value=>[value.originId,value])).values()]};}),
@@ -69,6 +80,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    const adopted=await batches.adoptLegacy(library,item,input.originId);Object.assign(item,{batchId:adopted.batchId,sourceId:adopted.sourceId,legacyOrigin:input.originId,invalidatedReason:adopted.candidate.reason});delete item.legacyChoices;await sync(saved);return view(await save(saved));
   }),
   list:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id);const saved=await record(input.id);await sync(saved);return {...view(await save(saved)),...(batches.getClassificationRules?await batches.getClassificationRules(library):{classificationRules:[]})};}),
+  recheck:input=>serial(input.id,async()=>{await workspace.checked(input.id);const saved=await record(input.id);await recheck(saved);return view(await save(saved));}),
   scan:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),discovered=await discoverSources(library),seen=new Set();await sync(saved);
    for(const source of discovered.sources){
@@ -99,7 +111,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
     for(const item of pending){const source=full.sources.find(source=>source.identity===item.identity);item.batchId=batch.batchId;item.sourceId=source.sourceId;item.status='waiting';}
     Object.assign(saved,await save(saved));await batches.startAnalysis({batchId:batch.batchId,sourceIds:pending.map(item=>item.sourceId)});
    }
-   const resuming=chosen.filter(item=>item.batchId&&['paused','failed','waiting','needs-classification'].includes(item.status));
+   const resuming=chosen.filter(item=>item.batchId&&['pending','paused','failed','waiting','needs-classification'].includes(item.status));
    for(const batchId of new Set(resuming.map(item=>item.batchId)))await batches.startAnalysis({batchId,sourceIds:resuming.filter(item=>item.batchId===batchId).map(item=>item.sourceId)});
    await sync(saved);return view(await save(saved));
   }),
@@ -117,7 +129,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','请等待分析完成后归档');
    if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>90)batchFail('INVALID_REQUEST','归档请求缺少稳定标识');
    for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,acceptNewCategory:item.classification.newCategoryAccepted===true,newCategoryHash:item.classification.newCategory?.proposalHash,manuallyEdited:item.manuallyEdited===true}))});}
-   await sync(saved);return view(await save(saved));
+   try{await recheck(saved);}catch(error){if(error.code!=='EXECUTION_INTERRUPTED')throw error;await sync(saved);saved.reviewCheck={status:'blocked',checkedAt:new Date().toISOString(),reason:{code:error.code,message:error.message}};}return view(await save(saved));
   }),
  };
 }
