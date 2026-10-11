@@ -79,7 +79,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
     if(item.hash&&item.hash!==source.hash){item.history.push({hash:item.hash,identity:item.identity,batchId:item.batchId,sourceId:item.sourceId});for(const field of ['batchId','sourceId','analysis','classification','suggestion','targetPath','manuallyEdited','stage','tags','kind'])delete item[field];item.status='pending';item.invalidatedReason='源正文已变化，请重新处理';}
     else if(item.batchId&&item.currentPath!==source.currentPath){const batch=await snapshot(item.batchId);await batches.rebindSource({batchId:item.batchId,revision:batch.revision,sourceId:item.sourceId,currentPath:source.currentPath});delete item.classification;delete item.targetPath;item.status='needs-classification';item.invalidatedReason='来源位置已变化，请复核分类与归档位置';}
     if(item.status==='missing'&&!item.batchId)item.status='pending';
-    Object.assign(item,{identity:source.identity,currentPath:source.currentPath,hash:source.hash,ingestStatus:source.ingestStatus,available:true});seen.add(item.itemId);await connectLegacy(library,saved,item);
+    Object.assign(item,{identity:source.identity,currentPath:source.currentPath,hash:source.hash,ingestStatus:source.ingestStatus,associationHash:source.associationHash,available:true});seen.add(item.itemId);await connectLegacy(library,saved,item);
    }
    for(const item of saved.items)if(!seen.has(item.itemId)&&item.status!=='archived'){item.available=false;item.status='missing';}
    return view(await save(saved));

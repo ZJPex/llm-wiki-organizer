@@ -31,11 +31,12 @@ async function fixture(t){
   return {request,server};
  }
  const service=await start(),saved=await service.request('workspace/save',settings);
- async function legacy(name='人工缓存.md',request=service.request){
+ async function legacy(name='人工缓存.md',request=service.request,preserveIdentity=false){
   let batch=await request('batches/create',{...settings,mode:'inbox'});
   batch=await request('batches/analyzeNext',{batchId:batch.batchId,revision:batch.revision});
   batch=await request('batches/classifyNext',{batchId:batch.batchId,revision:batch.revision});
   batch=await request('batches/reviewItem',{batchId:batch.batchId,revision:batch.revision,sourceId:batch.sources[0].sourceId,action:'confirmPlan',name,category:'',manuallyEdited:true});
+  if(!preserveIdentity){const store=createBatchStore({stateDirectory:path.join(f.root,'batches')});await store.update(batch.batchId,batch.revision,value=>{delete value.classificationLibraryIdentity;for(const source of value.sources){delete source.classification.libraryIdentity;delete source.classification.rulesHash;delete source.classification.effectiveRulesHash;delete source.frozenPlan.libraryIdentity;delete source.frozenPlan.rulesHash;delete source.frozenPlan.effectiveRulesHash;}return value;});batch=await request('batches/get',{batchId:batch.batchId});}
   return batch;
  }
  return {...f,...service,scope,start,legacy,id:saved.id,settings,sourceRoot,calls};
@@ -88,7 +89,7 @@ test('无法证明分析版本或物理身份的旧结果只留历史，未完�
    if(scenario==='version')delete batch.sources[0].analysisVersion;
    if(scenario==='identity')delete batch.sources[0].fileIdentity;
    if(scenario==='execution')batch.slices=[{sliceId:'pending',status:'applying',originalResultPath:path.join(f.root,'secret-original-result.json')}];
-   return batch;
+  return batch;
   });
   const before=f.calls.length,scanned=await f.request('inbox/scan',{id:f.id}),item=scanned.items[0];
   assert.equal(item.analysis,undefined);assert.equal(item.history[0].valid,false);assert.match(item.history[0].reason,scenario==='version'?/版本/:scenario==='identity'?/身份/:/执行现场/);assert.equal(f.calls.length,before);
@@ -155,4 +156,21 @@ test('接入后新增的人工确认也保留为来源；知识库身份改变�
  await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'再次人工修改.md',category:'',reviewBasis:item.reviewBasis,manuallyEdited:true});
  await writeFile(path.join(f.settings.libraryPath,'.llm-wiki/project.json'),JSON.stringify({id:'replacement-project',createdAt:2}));await f.request('workspace/save',f.settings);
  const changed=await f.request('inbox/scan',{id:f.id});assert.equal(changed.items[0].status,'legacy-conflict');assert.deepEqual(changed.items[0].legacyChoices.map(value=>value.name).sort(),['人工缓存.md','再次人工修改.md']);assert.equal(changed.items[0].legacyChoices.every(value=>value.confirmed===false),true);
+});
+
+test('库身份、分类和冻结授权均有效的旧人工确认直接采纳，零模型请求并保留原审核',async t=>{
+ const f=await fixture(t),old=await f.legacy('有效确认.md',f.request,true),before=f.calls.length;
+ const scanned=await f.request('inbox/scan',{id:f.id}),item=scanned.items[0];assert.equal(item.status,'confirmed');assert.equal(item.suggestion,'有效确认.md');assert.ok(item.targetPath.endsWith('有效确认.md'));assert.equal(item.manuallyEdited,true);assert.equal(item.history[0].confirmed,true);assert.equal(f.calls.length,before);
+ const repeated=await f.request('inbox/scan',{id:f.id});assert.equal(repeated.items[0].status,'confirmed');assert.equal(f.calls.length,before);
+ const original=await f.request('batches/get',{batchId:old.batchId});assert.equal(original.sources[0].status,'reviewed');assert.equal(original.sources[0].confirmedName,'有效确认.md');
+});
+
+test('旧人工确认冻结凭据损坏时只保留待重审建议，规则变化仅撤销分类而保留有效正文',async t=>{
+ for(const scenario of ['frozen','rules']){
+  const f=await fixture(t),old=await f.legacy('有效确认.md',f.request,true);
+  if(scenario==='frozen'){const store=createBatchStore({stateDirectory:path.join(f.root,'batches')});await store.update(old.batchId,old.revision,value=>{value.sources[0].frozenPlan.name='篡改.md';return value;});}
+  else{await writeFile(path.join(f.sourceRoot,'b.md'),'另一份材料解释缓存一致性、索引维护以及请求失败之后保留成功结果的恢复条件。');let next=await f.request('batches/create',{...f.settings,mode:'inbox',includeIdentities:['b.md']});next=await f.request('batches/analyzeNext',{batchId:next.batchId,revision:next.revision});next=await f.request('batches/classifyNext',{batchId:next.batchId,revision:next.revision});await f.request('batches/reviewItem',{batchId:next.batchId,revision:next.revision,sourceId:next.sources[0].sourceId,action:'confirmPlan',name:'偏好材料.md',category:'',saveClassificationRule:true,ruleText:'以后保留缓存恢复主题'});}
+  const before=f.calls.length,scan=await f.request('inbox/scan',{id:f.id}),item=scan.items.find(value=>value.identity==='a.md');assert.notEqual(item.status,'confirmed');assert.ok(item.analysis);assert.equal(item.suggestion,'有效确认.md');assert.match(item.invalidatedReason,scenario==='frozen'?/冻结/:/规则/);assert.equal(f.calls.length,before);
+  const reviewed=await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'有效确认.md',category:'',reviewBasis:item.reviewBasis});assert.equal(reviewed.items[0].status,'confirmed');assert.equal(f.calls.length,before);
+ }
 });
