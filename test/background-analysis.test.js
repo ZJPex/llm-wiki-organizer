@@ -19,7 +19,7 @@ async function waitFor(read,predicate){let last;for(let attempt=0;attempt<200;at
 async function fixture(t){const f=await migrationFixture(t),sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts');await mkdir(sourceRoot);await mkdir(artifactRoot);for(const name of ['a','b','c'])await writeFile(path.join(sourceRoot,name+'.md'),`${name}：这份材料讨论缓存一致性、索引维护与失败恢复。`);const configPath=path.join(f.root,'config.json');await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'fixed-test'}}));return {...f,input:{mode:'inbox',libraryPath:f.backup.originalPath,sourceRoot,artifactRoot,configPath,wikiSourcePath:path.join(f.root,'upstream')}};}
 const calls=async root=>(await readFile(path.join(root,'calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
 
-test('HTTP 后台作业脱离页面、并发启动幂等、知识库互斥、材料边界暂停继续',async t=>{
+test('HTTP 后台作业脱离页面、并发启动幂等、知识库互斥、请求边界暂停继续',async t=>{
  const f=await fixture(t),server=await child(t,f.root,1),request=server.request;
  const batch=await request('create',f.input),id={batchId:batch.batchId};
  await Promise.all(Array.from({length:6},()=>request('startAnalysis',id)));
@@ -27,7 +27,7 @@ test('HTTP 后台作业脱离页面、并发启动幂等、知识库互斥、材
  const another=await request('create',f.input);
  await assert.rejects(request('startAnalysis',{batchId:another.batchId}),{code:'BATCH_BUSY'});
  const live=await request('get',id);await assert.rejects(request('analyzeNext',{...id,revision:live.revision}),{code:'BATCH_BUSY'});
- const pausing=await request('pauseAnalysis',id);assert.equal(pausing.analysisJob.status,'pausing');assert.equal(pausing.analysisJob.boundary,'current-material');
+ const pausing=await request('pauseAnalysis',id);assert.equal(pausing.analysisJob.status,'pausing');assert.equal(pausing.analysisJob.boundary,'model-request');
  server.release();const paused=await waitFor(()=>request('get',id),value=>value.analysisJob.status==='paused');assert.equal(paused.analysisProgress.remaining,2);assert.equal((await calls(f.root)).length,1);
  await request('continueAnalysis',id);
  // 不再轮询或保持页面请求，服务自行处理后续材料。

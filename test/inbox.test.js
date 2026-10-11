@@ -76,7 +76,7 @@ test('分析中公开读取分段进度，重分析仅处理指定的信息不�
   const live=await service.get({batchId:initial.batchId});
   assert.equal(live.phase,'analysis-running');assert.equal(live.interrupted,false);
   assert.equal(live.flow.analysisCurrent.stage,'segment');
-  assert.equal(live.flow.analysisCurrent.step,1);assert.equal(live.flow.analysisCurrent.totalSteps,1);
+  assert.equal(live.flow.analysisCurrent.completed,0);assert.equal(live.flow.analysisCurrent.totalSteps,1);
   assert.ok(live.flow.analysisCurrent.startedAt);observed=true;
   return {title:'缓存一致性',summary:'缓存主题',evidence:[request.content.slice(0,10)],uncertain};
  }});
