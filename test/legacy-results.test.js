@@ -174,3 +174,20 @@ test('旧人工确认冻结凭据损坏时只保留待重审建议，规则变�
   const reviewed=await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:'有效确认.md',category:'',reviewBasis:item.reviewBasis});assert.equal(reviewed.items[0].status,'confirmed');assert.equal(f.calls.length,before);
  }
 });
+
+test('旧确认复核其实际分类依赖；无关类别新增不撤销确认，目标说明变化仅撤销分类',async t=>{
+ const f=await fixture(t);await f.legacy('有效确认.md',f.request,true);const root=path.join(f.settings.libraryPath,'raw/sources');
+ await mkdir(path.join(root,'009 无关类别'));await writeFile(path.join(root,'009 无关类别/.category.json'),JSON.stringify({description:'与缓存主题无关',aliases:[]}));
+ const before=f.calls.length,first=await f.request('inbox/scan',{id:f.id});assert.equal(first.items[0].status,'confirmed');assert.equal(f.calls.length,before);
+ await writeFile(path.join(root,'.category.json'),JSON.stringify({description:'根分类说明发生实际变化',aliases:[]}));
+ const changed=await f.request('inbox/scan',{id:f.id});assert.notEqual(changed.items[0].status,'confirmed');assert.ok(changed.items[0].analysis);assert.equal(changed.items[0].suggestion,'有效确认.md');assert.equal(f.calls.length,before);assert.equal(changed.items[0].history[0].classificationValid,false);
+});
+
+test('旧任务已归档的文件直接接入归档台账；目标后续删除和重启不会重新排队',async t=>{
+ const f=await fixture(t),old=await f.legacy('历史归档.md',f.request,true);
+ const archived=await f.request('batches/confirmNewArchive',{batchId:old.batchId,revision:old.revision,requestId:'legacy-archive',writersPaused:true,items:[{sourceId:old.sources[0].sourceId,name:'历史归档.md',category:'',manuallyEdited:true}]});
+ const current=archived.sources[0].currentPath,before=f.calls.length;await f.request('workspace/save',{...f.settings,sourceRoot:path.join(f.settings.libraryPath,'raw/sources')});
+ const scan=await f.request('inbox/scan',{id:f.id}),item=scan.items.find(value=>value.suggestion==='历史归档.md');assert.ok(item);assert.equal(item.status,'archived');assert.equal(item.history[0].originId,old.batchId+':'+old.sources[0].sourceId);assert.equal(f.calls.length,before);
+ await rm(current);const deleted=await f.request('inbox/scan',{id:f.id});assert.equal(deleted.items.find(value=>value.itemId===item.itemId).status,'archived');assert.equal(deleted.items.find(value=>value.itemId===item.itemId).archiveAvailability,'missing');assert.equal(f.calls.length,before);
+ await f.scope.close(f.server);const restarted=await f.start(),restored=await restarted.request('inbox/list',{id:f.id});assert.equal(restored.items.find(value=>value.itemId===item.itemId).status,'archived');assert.equal(f.calls.length,before);
+});

@@ -46,7 +46,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   if(item.status==='archived'||(item.batchId&&!item.legacyOrigin))return;
   const candidates=await batches.legacyResults(library,item);item.history=[...item.history.filter(value=>!candidates.some(candidate=>candidate.originId===value.originId)),...candidates];
   if(item.batchId){
-   const origin=candidates.find(value=>value.originId===item.legacyOrigin);if(origin?.valid)return;
+   const origin=candidates.find(value=>value.originId===item.legacyOrigin);if(origin?.valid){const batch=await snapshot(item.batchId);if(!['running','pausing'].includes(batch.analysisJob.status)){await batches.refreshReview({batchId:batch.batchId,revision:batch.revision});await sync(saved);}return;}
    item.history.push({originId:item.batchId+':'+item.sourceId,name:item.suggestion,category:item.classification?.category??null,tags:item.tags??[],manuallyEdited:item.manuallyEdited===true,reason:'接入后的正文依据失效，保留此任务报告与审核记录',valid:false,recoveryUrl:'/task-report?batchId='+item.batchId});
    for(const field of ['batchId','sourceId','analysis','classification','suggestion','confirmedName','reviewBasis','targetPath','manuallyEdited','stage','tags','kind','legacyOrigin'])delete item[field];item.status='pending';
   }
@@ -71,7 +71,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
 
  function select(saved,ids){if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)batchFail('INVALID_SELECTION','请选择文件');const chosen=ids.map(id=>saved.items.find(item=>item.itemId===id));if(chosen.some(item=>!item))batchFail('INVALID_SELECTION','所选文件不属于当前知识库');return chosen;}
  return {
-  history:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id),saved=await records(input.id),history=[...await batches.legacyHistory(library),...saved.flatMap(value=>value.items).flatMap(item=>item.history??[])];return {libraryId:input.id,records:[...new Map(history.filter(value=>value.originId).map(value=>[value.originId,value])).values()]};}),
+  history:input=>serial(input.id,async()=>{const library=await workspace.checked(input.id),current=await record(input.id),saved=await records(input.id),history=[...await batches.legacyHistory(library),...saved.filter(value=>value.scope!==current.scope).flatMap(value=>value.items).flatMap(item=>(item.history??[]).map(value=>({...value,valid:false,classificationValid:false,confirmed:false,reason:'旧知识库或来源范围的结果，仅供历史查阅'}))),...current.items.flatMap(item=>item.history??[])];return {libraryId:input.id,records:await batches.sanitizeLegacy(library,[...new Map(history.filter(value=>value.originId).map(value=>[value.originId,value])).values()])};}),
   chooseLegacy:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id);await sync(saved);const [item]=select(saved,[input.itemId]);
    if(item.legacyOrigin===input.originId)return view(await save(saved));
@@ -83,6 +83,8 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   recheck:input=>serial(input.id,async()=>{await workspace.checked(input.id);const saved=await record(input.id);await recheck(saved);return view(await save(saved));}),
   scan:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),discovered=await discoverSources(library),seen=new Set();await sync(saved);
+   for(const archived of await batches.legacyArchived(library))if(!saved.items.some(item=>(item.batchId===archived.batchId&&item.sourceId===archived.sourceId)||(item.status==='archived'&&item.fileIdentity===archived.fileIdentity)))saved.items.push({itemId:randomUUID(),libraryId:input.id,...archived});
+   await sync(saved);
    for(const source of discovered.sources){
     const stat=await lstat(source.currentPath,{bigint:true}),fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);
     let item=saved.items.find(value=>value.fileIdentity===fileIdentity);
