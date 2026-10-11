@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {createLibraryInboxHome} from '../public/library-inbox.js';
 
+test('文件失败说明影响范围并提供手动重试，退避中的文件呈现有限尝试',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let starts=0;
+ const items=[{itemId:'failed',identity:'失败.md',status:'failed',available:true,error:'模型鉴权失败，请修正配置后重试',failure:{scope:'model',attempts:1}},{itemId:'waiting',identity:'退避.md',status:'analyzing',available:true,stage:'segment',progress:{retry:{status:'waiting',attempt:1,maxAttempts:3}}}];
+ t.mock.method(globalThis,'fetch',async(url,options)=>{if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};if(url==='/api/inbox/start'){assert.deepEqual(JSON.parse(options.body).itemIds,['failed']);starts++;items[0].status='analyzing';}return {ok:true,json:async()=>({libraryId:'library',items})};});
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:()=>{}});await home.load();assert.match(tasks.textContent,/同模型配置.*尝试 1/);assert.match(tasks.textContent,/退避等待.*1\/3/);
+ const retry=tasks.querySelectorAll('button').find(button=>button.textContent==='重试此文件');assert.ok(retry);await retry.click();assert.equal(starts,1);
+});
+
 test('收件箱页面明确勾选后启动，保存建议和人工编辑，再确认归档，重载保留状态',async t=>{
  const document=createInboxDocument();const old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);
  t.mock.method(globalThis,'setInterval',()=>0);
