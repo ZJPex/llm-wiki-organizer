@@ -47,7 +47,7 @@ export function createModelConcurrency({stateDirectory}={}){
      try{return await this.run(async()=>{try{
       if(attempt>1)await context.onModelProgress?.({retry:{status:'retrying',attempt,maxAttempts:MODEL_RETRY_POLICY.attempts}});
       const stoppedError=stopped(context);if(stoppedError)throw stoppedError;
-      const result=await operation();cooldowns.delete(modelKey);if(attempt>1)await context.onModelProgress?.({retry:null});return result;
+      const startedAt=Date.now(),result=await operation();if((cooldowns.get(modelKey)??0)<=startedAt)cooldowns.delete(modelKey);if(attempt>1)await context.onModelProgress?.({retry:null});return result;
      }catch(original){
       const error=safeModelFailure(original);error.attempts=attempt;
       if(error.shared)blocked.set(modelKey,error);

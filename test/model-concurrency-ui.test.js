@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {modelConcurrencyControls} from '../public/model-concurrency-ui.js';
+import {backgroundAnalysis} from '../public/background-analysis.js';
 test('审核进度显示分段完成量与实际占用，调速输入保持焦点与草稿',async()=>{
  const document=createInboxDocument(),previous=globalThis.document;globalThis.document=document;
  try{const host=document.querySelector('#progress'),settings=[];const controls=modelConcurrencyControls(host,{request:async(limit)=>{settings.push(limit);return {limit,active:3,converging:true};}});
@@ -35,4 +36,10 @@ test('失败及退避界面说明文章与同配置范围、有限尝试和手�
   controls.update({modelConcurrency:{limit:3,active:0},analysisJob:{status:'failed',inFlight:0},sources:[{identity:'甲.md',failure:{scope:'model',message:'模型鉴权失败，请修正配置后重试',attempts:1},progress:{status:'failed',stage:'segment'}}],flow:{}});
   assert.match(host.textContent,/甲.md.*同模型配置.*鉴权失败/);assert.match(host.textContent,/已结束.*失败/);assert.match(host.textContent,/手动.*继续/);
  }finally{globalThis.document=previous;}
+});
+
+test('按文件恢复部分完成有中文终态与可用继续入口',()=>{
+ const document=createInboxDocument(),button=document.createElement('button'),pause=document.createElement('button'),message=document.createElement('p');
+ backgroundAnalysis({getBatch:()=>({analysisJob:{status:'partial',sourceIds:['one'],allowedActions:['continueAnalysis']}}),request:async()=>{},update:()=>{}}).render(button,pause,message);
+ assert.match(message.textContent,/所选.*完成.*其他.*继续/);assert.equal(button.textContent,'继续分析');assert.equal(button.disabled,false);assert.equal(pause.hidden,true);
 });

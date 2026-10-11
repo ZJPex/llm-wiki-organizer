@@ -46,6 +46,12 @@ test('真实 HTTP 429 有限退避释放共享额度，后续成功且重复分�
  assert.doesNotMatch(JSON.stringify(result.value),/private-key|secret-key-and-provider-response|127\.0\.0\.1/);
 });
 
+test('限流发生前的在途成功不会提前解除冷却，冷却后单请求探测再恢复压力',async t=>{
+ let firstContent;const f=await fixture(t,async({request,calls})=>{firstContent??=request.content;if(request.content===firstContent&&calls.filter(call=>call.request.content===firstContent).length===1)return {status:429};await delay(30);});
+ await writeFile(path.join(f.sourceRoot,'long.md'),Array.from({length:100},(_,index)=>`第${index}段缓存一致性与失败恢复，详细说明索引维护。`).join(''));
+ await f.call('model-concurrency/set',{limit:3});const complete=await f.call('planning/analyze',f.input);assert.equal(complete.status,200);assert.ok(f.calls[3].time-f.calls[0].time>=200,'冷却期间不能因旧在途成功提前派发');assert.ok(f.peak()<=3);
+});
+
 test('局部分段有限重试耗尽后文章失败、其他文章可审核，手动重试仅补检查点缺口',async t=>{
  let broken=true,badContent;
  const f=await fixture(t,({request})=>{if(request.identity==='a-long.md'&&request.stage==='segment'){badContent??=request.content;if(broken&&request.content===badContent)return {status:503};}}, {batch:true});
