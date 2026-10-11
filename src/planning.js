@@ -53,7 +53,7 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
   const modelConcurrency=createModelConcurrency({stateDirectory});
-  const modelGenerate=generate;generate=(config,request)=>withModelContext({...modelContext(),priority:request.stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(config,request)));
+  const modelGenerate=generate;generate=(config,request)=>withModelContext({...modelContext(),priority:request.stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).request(config,request,()=>modelGenerate(config,request)));
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
@@ -68,10 +68,11 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   }
   async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await atomicRename(temporary, file); }
   const inFlight=new Map();
-  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=withModelContext({...modelContext(),articleKey:modelContext()?.articleKey??key},fn).finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
+  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=withModelContext({...modelContext(),articleKey:modelContext()?.articleKey??key,failureScope:modelContext()?.failureScope??{}},fn).finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,
+    resetModelFailure:async input=>modelConcurrency.resumeModel(await readModelConfig(input)),
     // 仅由整理批次在核验正式执行证据后调用，不开放 HTTP。一次映射避免 A→B→C 链式改名。
     commitIdentityMappings: input => serial(async () => {
       const source=await state(input.sourceRoot,input.libraryPath),target=await state(input.targetRoot,input.libraryPath);
@@ -98,6 +99,8 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       const {sourceRoot,identity}=input,file=await sourceFile(sourceRoot,identity),text=await readFile(file,'utf8'),sourceHash=hash(text);
       const view=analysisView(text),kind=kindOf(view),config=['body','navigation'].includes(kind)?await readModelConfig(input):null,version=analysisVersion(config);
       return once(JSON.stringify([file,sourceHash,version,input.reanalyze===true]),async()=>{
+      if(input.onProgress)modelContext().onModelProgress=input.onProgress;
+      if(input.retryFailures&&config)modelConcurrency.resumeModel(config);
       const saved = await state(sourceRoot, input.libraryPath);
       const prior = saved.data.entries[identity];
       if(prior?.hash===sourceHash&&sameAnalysisVersion(prior.analysisVersion,version)&&!input.reanalyze)return {...prior,reused:true};
@@ -193,6 +196,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
       return entry;
     }),
     classify: input => once(JSON.stringify(['classification',input.sourceRoot,input.identity]),async () => {
+      if(input.onProgress)modelContext().onModelProgress=input.onProgress;
       const saved = await state(input.sourceRoot, input.libraryPath);
       const file = await sourceFile(input.sourceRoot, input.identity);
       const entry = saved.data.entries[input.identity];

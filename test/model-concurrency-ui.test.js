@@ -26,3 +26,13 @@ test('恢复进度展示已复用段、该次分析在途数及中断未知计�
  controls.update({modelConcurrency:{limit:3,active:0},analysisJob:{status:'interrupted',inFlight:null},flow:{}});assert.match(host.textContent,/中断.*未知/);
  }finally{globalThis.document=previous;}
 });
+
+test('失败及退避界面说明文章与同配置范围、有限尝试和手动恢复动作',()=>{
+ const document=createInboxDocument(),previous=globalThis.document;globalThis.document=document;
+ try{const host=document.querySelector('#progress'),controls=modelConcurrencyControls(host);
+  controls.update({modelConcurrency:{limit:3,active:0,retrying:1,rateLimited:true},analysisJob:{status:'running',inFlight:0},sources:[{identity:'甲.md',progress:{status:'running',stage:'segment',retry:{status:'waiting',attempt:1,maxAttempts:3,delayMs:250,message:'模型服务限流，等待后重试'}}}],flow:{}});
+  assert.match(host.textContent,/退避.*1\/3/);assert.match(host.textContent,/限流.*降低/);
+  controls.update({modelConcurrency:{limit:3,active:0},analysisJob:{status:'failed',inFlight:0},sources:[{identity:'甲.md',failure:{scope:'model',message:'模型鉴权失败，请修正配置后重试',attempts:1},progress:{status:'failed',stage:'segment'}}],flow:{}});
+  assert.match(host.textContent,/甲.md.*同模型配置.*鉴权失败/);assert.match(host.textContent,/已结束.*失败/);assert.match(host.textContent,/手动.*继续/);
+ }finally{globalThis.document=previous;}
+});

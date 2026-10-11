@@ -2,6 +2,7 @@ import {classificationPrompt} from './classification-prompt.js';
 import { generateWithCodex } from './codex-cli.js';
 import { readFile } from 'node:fs/promises';
 import { canonicalPath } from './filesystem-paths.js';
+import {failureFromHttp,safeModelFailure,modelFailure} from './model-failure.js';
 
 const presets = {
   'codex-cli': { provider: 'codex-cli', model: 'gpt-5.4-mini', maxContextSize: 200000 },
@@ -57,8 +58,11 @@ export async function generateWithModel(config, request, cliOptions) {
     const response = await fetch(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(120000),
       headers: { ...config.customHeaders, 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
       body: JSON.stringify({ model: config.model, stream: false, messages }) });
-    if (!response.ok) throw new Error();
+    if (!response.ok){
+      if(response.status===429){let body;try{body=await response.json();}catch{}if(['insufficient_quota','billing_hard_limit_reached','quota_exceeded'].some(code=>body?.error?.code===code||body?.error?.type===code))throw modelFailure('MODEL_QUOTA_EXHAUSTED',{status:429});}
+      throw failureFromHttp(response);
+    }
     const data = await response.json();
-    return JSON.parse(data.choices[0].message.content.replace(/^```(?:json)?\s*|\s*```$/g, ''));
-  } catch { throw new Error('模型调用失败或响应格式无效；未保存凭据或响应日志'); }
+    try{return JSON.parse(data.choices[0].message.content.replace(/^```(?:json)?\s*|\s*```$/g, ''));}catch{throw modelFailure('MODEL_RESPONSE_INVALID');}
+  } catch(error) { throw safeModelFailure(error); }
 }
