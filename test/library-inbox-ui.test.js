@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {createLibraryInboxHome} from '../public/library-inbox.js';
 
+test('旧结果摘要读取失败仍可访问原任务恢复导航，原导航错误保持可重试',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);
+ t.mock.method(globalThis,'fetch',async url=>({ok:url!=='/api/inbox/history',json:async()=>url==='/api/session'?{token:'test'}:url==='/api/inbox/history'?{error:'旧结果摘要暂时不可读'}:{libraryId:'library',items:[]}}));
+ let failing=false;const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:host=>{host.replaceChildren();if(failing)throw new Error('原恢复导航暂时不可读');const link=document.createElement('a');link.href='/?batchId=original';link.textContent='继续原任务';host.append(link);}});await home.load();
+ await tasks.querySelector('summary').click();assert.match(tasks.textContent,/旧结果摘要暂时不可读/);assert.ok(tasks.querySelectorAll('a').some(link=>link.href==='/?batchId=original'));
+ failing=true;await assert.rejects(tasks.querySelector('summary').click(),/原恢复导航暂时不可读/);failing=false;await tasks.querySelector('summary').click();assert.ok(tasks.querySelector('a'));
+});
+
 test('旧结果冲突呈现来源和依据，明确选择后才接入，库内历史可打开原恢复报告',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let chosen=null;

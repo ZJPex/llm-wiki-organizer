@@ -86,7 +86,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
     for(const input of nodes.ruleHost.querySelectorAll('textarea'))input.disabled=busy||!nodes.ruleDraft.saveClassificationRule;
    }else{delete nodes.ruleHost;delete nodes.ruleDraft;delete nodes.editorDraft;}
   }
-  if(!tasks.querySelector('details')){const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const legacy=element('div'),content=element('div');old.append(legacy,content);summary.onclick=async()=>{try{const result=await requestInbox('history',{id:libraryId});legacy.replaceChildren();for(const record of result.records??[])appendLegacyResult(legacy,record);await history(content);}catch(error){legacy.replaceChildren(element('p',error.message));}};tasks.append(old);}
+  if(!tasks.querySelector('details')){const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const legacy=element('div'),content=element('div');old.append(legacy,content);summary.onclick=async()=>{try{const result=await requestInbox('history',{id:libraryId});legacy.replaceChildren();for(const record of result.records??[])appendLegacyResult(legacy,record);}catch(error){legacy.replaceChildren(element('p',error.message));}await history(content);};tasks.append(old);}
  }
  const timer=setInterval(()=>{if(!busy&&items.some(item=>['analyzing','waiting'].includes(item.status)))void load().catch(error=>message.textContent=error.message);},1200);timer.unref?.();
  return {clear,load,scan:()=>run(()=>load('scan'))};

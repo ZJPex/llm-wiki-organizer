@@ -21,6 +21,7 @@ async function page(t,{libraries=[{id:'a',libraryPath:'/a',valid:true}],pages=[{
  else if(url==='/api/workspace/save')value={id:input.id??'new',valid:true};
  else if(url==='/api/workspace/categories')value={categories:[],files:[],total:0,nextCursor:null};
  else if(url==='/api/inbox/list'||url==='/api/inbox/scan')value={libraryId:input.id,items:inboxItems[input.id]??[]};
+ else if(url==='/api/inbox/history')value={libraryId:input.id,records:[]};
  else if(url==='/api/batches/get')value=task;
  else if(url==='/api/batches/list'){if(batchesUnavailable)throw new Error('合成批次读取失败');value=pages[input.cursor??0];}
  else if(url==='/api/workspace/create')return create(input);
