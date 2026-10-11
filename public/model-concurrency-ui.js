@@ -11,5 +11,10 @@ export function modelConcurrencyControls(host,{request=setLimit}={}){
  let dirty=false;input.oninput=()=>{dirty=true;};
  const display=value=>{if(!value)return;occupancy.textContent=`模型调用占用 ${value.active}/${value.limit}${value.converging?' · 正在收敛，等待在途完成':''}；CLI 按整理器调用计数。`;if(!dirty&&document.activeElement!==input)input.value=String(value.limit);};
  save.onclick=async()=>{save.disabled=true;error.textContent='';try{const value=Number(input.value);if(!Number.isSafeInteger(value)||value<1)throw new Error('请输入合法正整数');const result=await request(value);dirty=false;display(result);}catch(e){error.textContent=e.message;}finally{save.disabled=false;}};
- return {update(batch){display(batch.modelConcurrency);const current=batch.flow?.analysisCurrent,classification=batch.flow?.classificationCurrent;const item=classification?.status==='running'?classification:current;if(!item||!['running','paused'].includes(item.status)){progress.textContent='';return;}const stage=({segment:'正文分段',synthesis:`汇总第 ${item.round??1} 轮`,search:'检索分类',choice:'选择分类',preparing:'检查来源'})[item.stage]??item.stage;progress.textContent=`${item.identity} · ${stage}${item.totalSteps?` ${item.completed??item.step??0}/${item.totalSteps}`:''}${item.status==='paused'?' · 已暂停':''}`;}};
+ return {update(batch){
+  display(batch.modelConcurrency);const current=batch.flow?.analysisCurrent,classification=batch.flow?.classificationCurrent;
+  let items=(batch.sources??[]).filter(source=>['running','paused'].includes(source.progress?.status)).map(source=>({identity:source.identity,...source.progress}));
+  if(!items.length){const item=classification?.status==='running'?classification:current;if(item&&['running','paused'].includes(item.status))items=[item];}
+  progress.textContent=items.map(item=>{const stage=({segment:'正文分段',synthesis:`汇总第 ${item.round??1} 轮`,search:'检索分类',choice:'选择分类',preparing:'检查来源'})[item.stage]??item.stage;return `${item.identity} · ${stage}${item.totalSteps?` ${item.completed??item.step??0}/${item.totalSteps}`:''}${item.status==='paused'?' · 已暂停':''}`;}).join('；');
+ }};
 }

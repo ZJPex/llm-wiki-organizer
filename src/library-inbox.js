@@ -18,7 +18,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(!groups.has(item.batchId))groups.set(item.batchId,await snapshot(item.batchId));
    const batch=groups.get(item.batchId),source=batch.sources.find(value=>value.sourceId===item.sourceId);if(!source)continue;
    item.analysis=source.analysis;item.suggestion=source.confirmedName??source.suggestion??source.analysis?.suggestion;item.classification=source.classification;item.targetPath=source.targetPath??source.classification?.finalPath;item.manuallyEdited=source.manuallyEdited;item.error=source.classificationError??source.skipReason;
-   item.stage=batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined;
+   item.progress=source.progress;item.stage=source.progress?.stage??(batch.flow.analysisCurrent?.sourceId===source.sourceId?batch.flow.analysisCurrent.stage:batch.flow.classificationCurrent?.sourceId===source.sourceId?batch.flow.classificationCurrent.stage:undefined);
    if(source.status==='succeeded'){item.status='archived';item.currentPath=source.currentPath;item.identity=source.currentIdentity;const stat=await lstat(source.currentPath,{bigint:true});item.fileIdentity=JSON.stringify([String(stat.dev),String(stat.ino),String(stat.birthtimeNs)]);}
    else if(!item.available)item.status='missing';
    else if(source.status==='reviewed')item.status='confirmed';

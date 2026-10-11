@@ -10,14 +10,22 @@ export const modelContext=()=>contexts.getStore();
 export function analysisPaused(){return Object.assign(new Error('分析已暂停，已发出的请求完成后停止'),{code:'ANALYSIS_PAUSED'});}
 export function createModelConcurrency({stateDirectory}={}){
  const file=stateDirectory&&path.join(stateDirectory,'model-concurrency.json');
- let limit=3,active=0,completed=0,failed=0,initialized=false,initializing,settings=Promise.resolve();const waiting=[];
+ let limit=3,active=0,completed=0,failed=0,initialized=false,initializing,settings=Promise.resolve(),dispatch=0,priorityBurst=0;const waiting=[],activeBatches=new Map(),lastDispatch=new Map();
  const snapshot=()=>({limit,active,queued:waiting.length,completed,failed,converging:active>limit,unit:'organizer-model-calls'});
  async function initialize(){if(initialized)return;if(!initializing)initializing=(async()=>{if(file)try{const saved=JSON.parse(await readFile(file,'utf8'));if(!Number.isSafeInteger(saved.limit)||saved.limit<1)throw new Error('已保存并发设置无效');limit=saved.limit;}catch(error){if(error.code!=='ENOENT')throw error;}initialized=true;})();await initializing;}
- function drain(){while(waiting.length&&active<limit){const item=waiting.shift();if(item.context?.shouldPause?.()){item.reject(analysisPaused());continue;}active++;item.resolve();}}
+ // 优先补全汇总与分类，但持续保留正文分段机会；同一层级按文章轮流取得额度。
+ function take(){
+  const segments=waiting.filter(item=>!item.context?.priority),ready=waiting.filter(item=>item.context?.priority);
+  const candidates=ready.length&&(!segments.length||priorityBurst<2)?ready:segments;
+  const item=candidates.reduce((chosen,item)=>(lastDispatch.get(item.context?.articleKey)??0)<(lastDispatch.get(chosen.context?.articleKey)??0)?item:chosen);
+  waiting.splice(waiting.indexOf(item),1);lastDispatch.set(item.context?.articleKey,++dispatch);priorityBurst=item.context?.priority?priorityBurst+1:0;return item;
+ }
+ function drain(){while(waiting.length&&active<limit){const item=take();if(item.context?.shouldPause?.()){item.reject(analysisPaused());continue;}active++;if(item.context?.batchId)activeBatches.set(item.context.batchId,(activeBatches.get(item.context.batchId)??0)+1);item.resolve();}}
  return {
   snapshot,
+  activeFor:batchId=>activeBatches.get(batchId)??0,
   async get(){await initialize();return snapshot();},
   async set(value){if(!Number.isSafeInteger(value)||value<1)throw new Error('并发上限必须是合法正整数');const update=settings.then(async()=>{await initialize();if(file){await mkdir(path.dirname(file),{recursive:true});const temporary=`${file}.${randomUUID()}.tmp`;await writeFile(temporary,JSON.stringify({limit:value}),{flag:'wx'});await atomicRename(temporary,file);}limit=value;drain();return snapshot();});settings=update.catch(()=>{});return update;},
-  async run(operation){await initialize();const context=contexts.getStore();if(context?.shouldPause?.())throw analysisPaused();await new Promise((resolve,reject)=>{waiting.push({resolve,reject,context});drain();});try{const result=await operation();completed++;return result;}catch(error){failed++;throw error;}finally{active--;drain();}},
+  async run(operation){await initialize();const context=contexts.getStore();if(context?.shouldPause?.())throw analysisPaused();await new Promise((resolve,reject)=>{waiting.push({resolve,reject,context});drain();});try{const result=await operation();completed++;return result;}catch(error){failed++;throw error;}finally{active--;if(context?.batchId){const count=activeBatches.get(context.batchId)-1;count?activeBatches.set(context.batchId,count):activeBatches.delete(context.batchId);}drain();}},
  };
 }

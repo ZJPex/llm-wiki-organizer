@@ -8,7 +8,7 @@ import {evolutionTouches} from './directory-dependencies.js';
 import { inventory } from './compatibility.js';
 import { categoryCatalog, recommendCategory, finalTarget, planDigest } from './categories.js';
 import { readModelConfig, generateWithModel } from './model-config.js';
-import {createModelConcurrency,modelContext} from './model-concurrency.js';
+import {createModelConcurrency,modelContext,withModelContext} from './model-concurrency.js';
 import {atomicRename} from './atomic-rename.js';
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function validateName(name) {
@@ -51,7 +51,7 @@ async function generateCheckedAnalysis(generate, config, request, content) {
 
 export function createPlanningService({ generate = generateWithModel, stateDirectory = path.join(os.homedir(), '.llm-wiki-organizer') } = {}) {
   const modelConcurrency=createModelConcurrency({stateDirectory});
-  const modelGenerate=generate;generate=(...args)=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(...args));
+  const modelGenerate=generate;generate=(...args)=>withModelContext({...modelContext(),priority:args[1].stage==='segment'?0:1},()=>(modelContext()?.modelConcurrency??modelConcurrency).run(()=>modelGenerate(...args)));
   // 串行状态变更，避免同一进程内审核互相覆盖。
   let queue = Promise.resolve();
   const serial = fn => { const pending = queue.then(fn); queue = pending.catch(() => {}); return pending; };
@@ -66,7 +66,7 @@ export function createPlanningService({ generate = generateWithModel, stateDirec
   }
   async function persist(file, data) { await mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; await writeFile(temporary, JSON.stringify(data, null, 2), { flag: 'wx' }); await atomicRename(temporary, file); }
   const inFlight=new Map();
-  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=fn().finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
+  const once=(key,fn)=>{if(inFlight.has(key))return inFlight.get(key);const pending=withModelContext({...modelContext(),articleKey:modelContext()?.articleKey??key},fn).finally(()=>inFlight.delete(key));inFlight.set(key,pending);return pending;};
   const parallel=async items=>{const results=await Promise.allSettled(items.map(fn=>fn()));const error=results.find(result=>result.status==='rejected');if(error)throw error.reason;return results.map(result=>result.value);};
   return {
     modelConcurrency,
