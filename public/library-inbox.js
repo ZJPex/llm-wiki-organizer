@@ -48,7 +48,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    else if(['needs-classification','needs-information'].includes(item.status))card.append(element('p','没有可靠候选。'+(item.classification?.reason??'正文信息不足，请补充后重新处理。')));
    if(['reviewable','needs-classification','confirmed'].includes(item.status)){
     const draft=drafts.get(item.itemId)??{name:item.suggestion??item.identity,category:item.classification?.category??null,tags:item.tags??[]};
-    if(item.status==='confirmed'&&item.classification?.newCategory&&!drafts.has(item.itemId)){draft.acceptNewCategory=true;draft.newCategoryHash=item.classification.newCategory.proposalHash;}
+    if(item.status==='confirmed'&&item.classification?.newCategoryAccepted&&!drafts.has(item.itemId)){draft.acceptNewCategory=true;draft.newCategoryHash=item.classification.newCategory.proposalHash;}
     const name=element('input');name.value=draft.name;name.setAttribute('aria-label','归档名称 '+item.identity);name.oninput=()=>{draft.name=name.value;drafts.set(item.itemId,draft);};
     const category=element('select');category.setAttribute('aria-label','主分类 '+item.identity);
     const placeholder=element('option','请选择主分类');placeholder.value='__unselected__';category.append(placeholder);

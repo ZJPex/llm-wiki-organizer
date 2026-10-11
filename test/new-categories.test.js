@@ -5,6 +5,7 @@ import {mkdir,writeFile,readFile,readdir} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import {migrationFixture} from './helpers/migration-fixture.js';
 import {listenForBrowser} from './helpers/http-server.js';
+import {httpFixtureScope} from './helpers/http-fixture-scope.js';
 import {createApp} from '../src/server.mjs';
 import {createWorkspaceService} from '../src/workspace.js';
 import {createPlanningService} from '../src/planning.js';
@@ -12,7 +13,7 @@ import {createBatchService} from '../src/batches.js';
 import {createInboxStrategy} from '../src/inbox.js';
 
 async function fixture(t,{files=['跨主题'],choose,search,propose,checkpoint,categories=['001 缓存','002 数据库']}={}){
- const f=await migrationFixture(t),sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts'),configPath=path.join(f.root,'config.json'),libraryPath=f.backup.originalPath;
+ const f=await migrationFixture(t,{retained:true}),scope=httpFixtureScope(t,f.root),sourceRoot=path.join(f.root,'inbox'),artifactRoot=path.join(f.root,'artifacts'),configPath=path.join(f.root,'config.json'),libraryPath=f.backup.originalPath;
  await mkdir(sourceRoot);await mkdir(artifactRoot);for(const category of categories)await mkdir(path.join(libraryPath,'raw/sources',category));
  await mkdir(path.join(f.root,'upstream/src/lib'),{recursive:true});await writeFile(path.join(f.root,'upstream/src/lib/source-watch-defaults.json'),JSON.stringify({enabled:false,autoIngest:false,includeExtensions:['.md'],excludeExtensions:[],excludeDirs:[],excludeGlobs:[]}));
  await writeFile(configPath,JSON.stringify({llmConfig:{provider:'custom',model:'test'}}));
@@ -26,15 +27,15 @@ async function fixture(t,{files=['跨主题'],choose,search,propose,checkpoint,c
    if(request.stage==='new-category')return propose?.(request)??{};
    return {title:'缓存与数据库实践',summary:request.content,evidence:[request.content.slice(0,15)],uncertain:false};
   }});
-  const batches=createBatchService({planning,stateDirectory:path.join(f.root,'batches'),strategies:{inbox:createInboxStrategy({checkpoint})}}),workspace=createWorkspaceService({batches,stateDirectory:path.join(f.root,'settings')}),server=createApp({batches,workspace});await listenForBrowser(server);t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(base+'/api/session')).json();
-  const request=async(action,input={})=>{const response=await fetch(base+'/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)}),body=await response.json();if(!response.ok)throw Object.assign(new Error(body.error),body);return body;};
+  const batches=createBatchService({planning,stateDirectory:path.join(f.root,'batches'),strategies:{inbox:createInboxStrategy({checkpoint})}}),workspace=createWorkspaceService({batches,stateDirectory:path.join(f.root,'settings')}),server=createApp({batches,workspace});scope.add(server);await listenForBrowser(server);
+  const base=`http://127.0.0.1:${server.address().port}`,{token}=await(await fetch(base+'/api/session',{signal:AbortSignal.timeout(15000)})).json();
+  const request=async(action,input={})=>{const response=await fetch(base+'/api/'+action,{method:'POST',signal:AbortSignal.timeout(15000),headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)}),body=await response.json();if(!response.ok)throw Object.assign(new Error(body.error),body);return body;};
   return {request,server};
  }
  const service=await start(),saved=await service.request('workspace/save',{libraryPath,sourceRoot,artifactRoot,configPath,wikiSourcePath:path.join(f.root,'upstream')});
  const initial=await service.request('inbox/scan',{id:saved.id});await service.request('inbox/start',{id:saved.id,itemIds:initial.items.map(item=>item.itemId)});
  const read=()=>service.request('inbox/list',{id:saved.id});let ready;for(let n=0;n<200;n++){ready=await read();if(ready.items.every(item=>!['waiting','analyzing'].includes(item.status)))break;await delay(20);}assert.ok(ready.items.every(item=>!['waiting','analyzing'].includes(item.status)));
- return {...f,...service,start,id:saved.id,sourceRoot,libraryPath,ready,calls,read};
+ return {...f,...service,start,close:scope.close,id:saved.id,sourceRoot,libraryPath,ready,calls,read};
 }
 
 test('首份材料提出完整编号子类，审核无写入，明确确认归档才创建类别与移动来源',async t=>{
@@ -78,7 +79,7 @@ test('分类落地失败保留两份来源与持久证据，重启后只经公�
  const page=await f.request('batches/list'),batch=await f.request('batches/get',{batchId:page.records[0].batchId}),report=await f.request('batches/getReport',{batchId:batch.batchId});
  assert.equal(report.counts.succeeded,0);assert.equal(report.counts.failed,1);assert.match(await readFile(path.join(f.sourceRoot,'第一份.md'),'utf8'),/第一份/);assert.match(await readFile(path.join(f.sourceRoot,'第二份.md'),'utf8'),/第二份/);
  const evidence=report.evidence.find(item=>item.archiveJournalPath),journal=JSON.parse(await readFile(evidence.archiveJournalPath,'utf8'));assert.equal(journal.status,'failed');assert.equal(journal.newCategories[0].proposalHash,f.ready.items[0].classification.newCategory.proposalHash);assert.ok(journal.categoryEvents.some(item=>item.status==='created'));
- await new Promise(resolve=>f.server.close(resolve));const restarted=await f.start(),current=await restarted.request('batches/get',{batchId:batch.batchId});
+ await f.close(f.server);const restarted=await f.start(),current=await restarted.request('batches/get',{batchId:batch.batchId});
  await restarted.request('batches/applySlice',{batchId:batch.batchId,revision:current.revision,sliceId:evidence.sliceId,approved:true,writersPaused:true});
  const recovered=await restarted.request('batches/getReport',{batchId:batch.batchId});assert.equal(recovered.counts.succeeded,1);const originalFailed=batch.sources.find(item=>item.sourceId===journal.items[0].sourceId);assert.match(await readFile(path.join(f.libraryPath,'raw/sources/003 分布式一致性',originalFailed.identity),'utf8'),/本文/);const retained=batch.sources.find(item=>item.sourceId!==originalFailed.sourceId);assert.match(await readFile(path.join(f.sourceRoot,retained.identity),'utf8'),/本文/);
 });
@@ -90,5 +91,12 @@ test('审核后的分类占用冲突保留来源，任意路径与篡改提议�
  await reviewNew(f,item);await mkdir(path.join(f.libraryPath,'raw/sources/003 分布式一致性'));
  await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'occupied-category',approved:true,writersPaused:true});
  assert.match(await readFile(path.join(f.sourceRoot,'冲突.md'),'utf8'),/冲突/);assert.deepEqual(await readdir(path.join(f.libraryPath,'raw/sources/003 分布式一致性')),[]);assert.equal((await f.read()).items.filter(item=>item.status==='archived').length,0);
+});
+
+test('不同新主题保留互不冲突编号，选已有类别不会顺带接受另一个新增提议',async t=>{
+ const f=await fixture(t,{files:['主题A','主题B'],search:missing,propose:request=>({proposal:{parent:'',label:request.content.summary.includes('[主题A]')?'消息队列':'复制协议',reason:'正文有独立用途',benefit:'沿独立主题查找实践'}})});
+ const categories=f.ready.items.map(item=>item.classification.category);assert.equal(new Set(categories).size,2);assert.deepEqual(categories.map(category=>category.slice(0,3)).sort(),['003','004']);
+ const item=f.ready.items[0];await f.request('inbox/review',{id:f.id,itemId:item.itemId,name:item.identity,category:'001 缓存'});const saved=(await f.read()).items.find(value=>value.itemId===item.itemId);assert.equal(saved.classification.newCategoryAccepted,false);
+ await f.request('inbox/archive',{id:f.id,itemIds:[item.itemId],requestId:'choose-existing',approved:true,writersPaused:true});assert.deepEqual((await readdir(path.join(f.libraryPath,'raw/sources'))).sort(),['001 缓存','002 数据库','old.md']);
 });
 

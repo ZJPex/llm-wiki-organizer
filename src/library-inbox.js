@@ -81,7 +81,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
    if(chosen.some(item=>!['confirmed','archived'].includes(item.status)))batchFail('REVIEW_REQUIRED','请先保存所选文件审核');
    if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','请等待分析完成后归档');
    if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>90)batchFail('INVALID_REQUEST','归档请求缺少稳定标识');
-   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,acceptNewCategory:!!item.classification.newCategory,newCategoryHash:item.classification.newCategory?.proposalHash,manuallyEdited:item.manuallyEdited===true}))});}
+   for(const batchId of new Set(chosen.filter(item=>item.status!=='archived').map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.confirmNewArchive({batchId,revision:batch.revision,requestId:input.requestId+':'+batchId,writersPaused:true,items:chosen.filter(item=>item.batchId===batchId&&item.status!=='archived').map(item=>({sourceId:item.sourceId,name:item.suggestion,category:item.classification.category,tags:item.tags,acceptNewCategory:item.classification.newCategoryAccepted===true,newCategoryHash:item.classification.newCategory?.proposalHash,manuallyEdited:item.manuallyEdited===true}))});}
    await sync(saved);return view(await save(saved));
   }),
  };
