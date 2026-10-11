@@ -103,15 +103,15 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
     // 已保存人工审核属于新的授权，不能被迟到模型结果取消。
     if(current.status!=='reviewed')Object.assign(current,source,result);
     else if(!current.analysis&&result.analysis)current.analysis=result.analysis;
-    current.progress={...current.progress,status:'complete'};
+    delete current.failure;current.progress={...current.progress,status:'complete',retry:null};
     for(const field of ['analysisCurrent','classificationCurrent'])if(record.flow[field]?.sourceId===sourceId)record.flow[field].status='complete';
     record.phase='file-review';return record;
    });
   }catch(error){
    await sourceTransaction(job.batchId,record=>{
     const current=record.sources.find(item=>item.sourceId===sourceId);if(!same(current))return record;
-    current.progress={...current.progress,status:error.code==='ANALYSIS_PAUSED'?'paused':'failed'};
-    if(error.code!=='ANALYSIS_PAUSED'){current.status=classifying?'classification-failed':'analysis-failed';current[classifying?'classificationError':'skipReason']=error.message;}
+    current.progress={...current.progress,status:error.code==='ANALYSIS_PAUSED'?'paused':'failed',retry:null};
+    if(error.code!=='ANALYSIS_PAUSED'){current.status=classifying?'classification-failed':'analysis-failed';current[classifying?'classificationError':'skipReason']=error.message;current.failure={code:error.code??'ANALYSIS_FAILED',message:error.message,attempts:error.attempts??1,scope:error.shared?'model':'article'};}
     for(const field of ['analysisCurrent','classificationCurrent'])if(record.flow[field]?.sourceId===sourceId)record.flow[field].status=current.progress.status;
     return record;
    });throw error;
@@ -199,6 +199,7 @@ export function createBatchService({strategies={},planning,backup=createBackup,m
  const jobs=createBatchJobs({store,view,step:analyzeNext,classify:classifyNext,processSource,proposeTree:treeAction,
   checkIdle:batch=>{assertExecutionScene(batch);assertReviewRefreshAllowed(batch);assertHistoryAccess(batch);if(active.has(batch.batchId)||activeLibraries.has(batch.libraryPath.toLowerCase()))batchFail('BATCH_BUSY','该知识库已有批次正在处理');if(batch.slices.some(slice=>slice.status==='applying'))batchFail('EXECUTION_INTERRUPTED','原库执行已开始，请先处理执行结果');},
   prepare:async job=>{const batch=await store.get(job.batchId);await store.update(batch.batchId,batch.revision,async record=>{
+   if(record.sources.some(source=>(!job.sourceIds||job.sourceIds.includes(source.sourceId))&&source.status.endsWith('failed')))await planning.resetModelFailure?.(record);
    await refreshReviewState(record,{planning,checkAnalysisConfig:true});
    return record;
   });}

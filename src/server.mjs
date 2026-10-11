@@ -9,6 +9,7 @@ import { preflight } from './compatibility.js';
 import { createBackup } from './backup.js';
 import { createPlanningService } from './planning.js';
 import {withModelContext} from './model-concurrency.js';
+import {safeModelFailure} from './model-failure.js';
 
 import { createMigrationService } from './migration.js';
 import {createBatchService} from './batches.js';
@@ -69,7 +70,7 @@ export function createApp({ inspect = preflight, backup = createBackup, planning
       if (workspaceAction) { try { return send(200,await workspace[workspaceAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'SETTINGS_FAILED'}); } }
       if (originalAction) { try { return send(200,await original[originalAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'ORIGINAL_FAILED'}); } }
       if (batchAction) { try { if(!batches)throw new Error('批次服务尚未配置'); await modelConcurrency?.get();return send(200,await batches[batchAction](input)); } catch(error) { return send(400,{error:error.message,code:error.code??'BATCH_FAILED',batchId:error.batchId,revision:error.revision}); } }
-      if (planningAction) { try { return send(200, await planning[planningAction](input)); } catch { return send(400, { error: '命名操作失败：请检查配置支持范围、源文件变化、证据、名称及冲突；未修改来源。' }); } }
+      if (planningAction) { try { return send(200, await planning[planningAction](input)); } catch(error) { if(error.code?.startsWith('MODEL_')){const safe=safeModelFailure(error);return send(400,{error:safe.message,code:safe.code,attempts:error.attempts});}return send(400, { error: '命名操作失败：请检查配置支持范围、源文件变化、证据、名称及冲突；未修改来源。' }); } }
       if (recoveryAction) { try { return send(200, await recovery[recoveryAction](input)); } catch(error) { return send(400, {error:error.message,code:error.code??'RECOVERY_FAILED'}); } }
       if (migrationAction) {
         try { return send(200, await migration[migrationAction](input)); }

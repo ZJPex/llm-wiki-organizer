@@ -49,7 +49,7 @@ test('一键分类跨分页处理全部合格材料，暂停后继续，未命�
 test('分类模型失败后立即显示失败进度，恢复时仅继续剩余项',async t=>{
  const value=await setup(t),{classifyAll}=await import('../public/classify-all.js');
  const options={...value,stopped:()=>false,update:batch=>{value.update(batch);if(batch.classificationProgress.completed===2)value.fail(true);}};
- await assert.rejects(classifyAll(options),/模拟模型断开/);
+ await assert.rejects(classifyAll(options),{message:'模型调用失败，请检查配置后重试'});
  assert.equal(value.getBatch().classificationProgress.failed,1);
  assert.equal(value.getBatch().classificationProgress.completed,2);
  assert.equal(value.getBatch().flow.classificationCurrent.status,'failed');
