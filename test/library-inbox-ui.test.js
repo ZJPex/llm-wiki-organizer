@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import {createInboxDocument} from './helpers/page-dom.js';
 import {createLibraryInboxHome} from '../public/library-inbox.js';
 
+test('旧结果冲突呈现来源和依据，明确选择后才接入，库内历史可打开原恢复报告',async t=>{
+ const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
+ const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);let chosen=null;
+ const records=[{originId:'first:source',valid:true,name:'人工第一份.md',category:'001 缓存',manuallyEdited:true,reason:'正文有效，人工确认需重审',recoveryUrl:'/task-report?batchId=first'},{originId:'second:source',valid:true,name:'人工第二份.md',category:'002 数据库',reason:'正文有效，分类依据需重审',recoveryUrl:'/task-report?batchId=second'}];
+ let item={itemId:'a',identity:'a.md',available:true,status:'legacy-conflict',legacyChoices:records,history:records};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url==='/api/session')return {ok:true,json:async()=>({token:'test'})};
+  if(url==='/api/inbox/chooseLegacy'){chosen=JSON.parse(options.body);item={...item,status:'needs-classification',suggestion:'人工第一份.md',legacyChoices:undefined};}
+  return {ok:true,json:async()=>url==='/api/inbox/history'?{records}:structuredClone({libraryId:'library',items:[item]})};
+ });
+ const home=createLibraryInboxHome({tasks,featured,more,getLibrary:()=>({id:'library',valid:true}),history:host=>host.append(document.createElement('p'))});await home.load();
+ assert.match(tasks.textContent,/人工第一份.md.*人工确认需重审/s);assert.match(tasks.textContent,/人工第二份.md.*分类依据需重审/s);assert.equal(chosen,null);
+ await tasks.querySelectorAll('button').find(node=>node.textContent==='采用此旧结果：人工第一份.md').click();assert.equal(chosen.originId,'first:source');assert.equal(chosen.itemId,'a');
+ await tasks.querySelector('summary').click();assert.ok(tasks.querySelectorAll('a').some(node=>node.getAttribute('href')==='/task-report?batchId=first'));assert.match(tasks.textContent,/来源：first:source/);
+});
+
 test('后台刷新独立更新另一材料进度，保留当前输入节点、焦点、光标与勾选',async t=>{
  const document=createInboxDocument(),old=Object.getOwnPropertyDescriptor(globalThis,'document');Object.defineProperty(globalThis,'document',{value:document,configurable:true});t.after(()=>old?Object.defineProperty(globalThis,'document',old):delete globalThis.document);t.mock.method(globalThis,'setInterval',()=>0);
  const tasks=document.createElement('div'),featured=document.createElement('div'),more=document.createElement('button');document.body.replaceChildren(tasks,featured,more);

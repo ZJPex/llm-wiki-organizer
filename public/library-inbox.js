@@ -1,12 +1,13 @@
 import {element} from './batch-ui.js';
 import {appendNewCategoryReview} from './new-category-review.js';
+import {appendLegacyResult} from './legacy-results.js';
 
 export async function requestInbox(action,input){
  const {token}=await(await fetch('/api/session')).json();
  const response=await fetch('/api/inbox/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Organizer-Token':token},body:JSON.stringify(input)}),result=await response.json();
  if(!response.ok)throw Object.assign(new Error(result.error),result);return result;
 }
-const labels={pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失',excluded:'已保留原处'};
+const labels={'legacy-conflict':'待选择旧结果','legacy-recovery':'旧任务待恢复',pending:'待处理',waiting:'等待分析',analyzing:'分析中',paused:'等待手动继续',reviewable:'可审核','needs-classification':'分类待定','needs-information':'信息不足',failed:'失败',confirmed:'已确认待归档',archived:'已归档',missing:'来源缺失',excluded:'已保留原处'};
 const control=(label,action,primary=false)=>{const button=element('button',label);button.type='button';button.className=primary?'primary':'';button.onclick=action;return button;};
 
 // 草稿与勾选独立于后台快照，轮询不覆盖用户尚未保存的修改。
@@ -40,9 +41,11 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
   for(const item of items){
    let nodes=cards.get(item.itemId);
    if(!nodes){const card=element('article'),heading=element('div'),checkbox=element('input'),title=element('strong'),badge=element('span'),info=element('div'),editor=element('div');card.className='review-card';heading.className='section-heading';checkbox.type='checkbox';checkbox.onchange=()=>{if(checkbox.checked){selected.add(item.itemId);const draft=drafts.get(item.itemId);if(draft?.invalidated){draft.reviewBasis=items.find(value=>value.itemId===item.itemId)?.reviewBasis;draft.invalidated=false;}}else selected.delete(item.itemId);render();};const label=element('label');label.append(checkbox,title);heading.append(label,badge);card.append(heading,info,editor);nodes={card,checkbox,title,badge,info,editor};cards.set(item.itemId,nodes);listHost.append(card);}
-   const {checkbox,title,badge,info,editor}=nodes;checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);title.textContent=item.identity;badge.textContent=labels[item.status]??item.status;badge.className='status-badge';info.replaceChildren();
+   const {checkbox,title,badge,info,editor}=nodes;checkbox.checked=selected.has(item.itemId);checkbox.disabled=busy||!item.available||['archived','excluded','legacy-conflict','legacy-recovery'].includes(item.status);checkbox.setAttribute('aria-label','选择 '+item.identity);title.textContent=item.identity;badge.textContent=labels[item.status]??item.status;badge.className='status-badge';info.replaceChildren();
    if(item.stage&&item.status==='analyzing'){const stage=({segment:'正文分段',synthesis:'摘要汇总',search:'分类检索',choice:'主分类选择',preparing:'检查来源'})[item.stage]??item.stage;info.append(element('p','当前阶段：'+stage+(item.progress?.totalSteps?` ${item.progress.completed??item.progress.step??0}/${item.progress.totalSteps}`:'')));}
    if(item.analysis?.summary)info.append(element('p',item.analysis.summary));
+   if(item.legacyChoices){info.append(element('p','旧结果存在冲突，请核对来源与依据后选择。'));for(const result of item.legacyChoices){const row=appendLegacyResult(info,result),choose=control('采用此旧结果：'+(result.name??'未命名'),()=>run(async()=>{await requestInbox('chooseLegacy',{id:libraryId,itemId:item.itemId,originId:result.originId});await load();}));choose.disabled=busy;row.append(choose);}}
+   if(item.archiveAvailability==='missing')info.append(element('p','归档目标现已移走或删除；原归档记录与恢复证据仍保留。'));
    for(const text of [item.invalidatedReason,item.error,drafts.get(item.itemId)?.invalidated?'审核依据已变化，旧选择已撤销；以下保留草稿，须重新审核。':null])if(text)info.append(element('p',text));
    if(item.failure)info.append(element('p',`${item.failure.scope==='model'?'同模型配置已停止派发':'本篇文章已停止新请求'} · 已尝试 ${item.failure.attempts} 次；修复原因后重试，仅补齐未完成工作。`));
    if(item.progress?.retry)info.append(element('p',`${item.progress.retry.status==='waiting'?'退避等待':'正在重试'} ${item.progress.retry.attempt}/${item.progress.retry.maxAttempts}`));
@@ -71,7 +74,7 @@ export function createLibraryInboxHome({tasks,featured,more,getLibrary,history})
    }
    for(const input of nodes.proposalHost.querySelectorAll('input'))input.disabled=busy;
   }
-  if(!tasks.querySelector('details')){const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const content=element('div');old.append(content);summary.onclick=()=>history(content);tasks.append(old);}
+  if(!tasks.querySelector('details')){const old=element('details'),summary=element('summary','历史记录与恢复');old.append(summary);const legacy=element('div'),content=element('div');old.append(legacy,content);summary.onclick=async()=>{try{const result=await requestInbox('history',{id:libraryId});legacy.replaceChildren();for(const record of result.records??[])appendLegacyResult(legacy,record);await history(content);}catch(error){legacy.replaceChildren(element('p',error.message));}};tasks.append(old);}
  }
  const timer=setInterval(()=>{if(!busy&&items.some(item=>['analyzing','waiting'].includes(item.status)))void load().catch(error=>message.textContent=error.message);},1200);timer.unref?.();
  return {clear,load,scan:()=>run(()=>load('scan'))};
