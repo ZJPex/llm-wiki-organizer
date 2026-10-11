@@ -40,6 +40,7 @@ export function createWorkspaceService({batches,stateDirectory=path.join(os.home
  async function checked(id){const record=await store.get(id);await validate(record);return record;}
  async function all(){const records=[];let cursor=0;do{const page=await store.list({cursor,limit:50});records.push(...page.records);cursor=page.nextCursor;}while(cursor!==null);return records;}
  return {
+  checked,stateDirectory,
   list:async()=>({libraries:await Promise.all((await all()).map(async record=>{try{await validate(record);return {...publicRecord(record),valid:true};}catch(error){return {...publicRecord(record),valid:false,error:error.message};}}))}),
   save:async input=>{
    const value=await validate(input);
