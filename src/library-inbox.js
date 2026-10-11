@@ -57,7 +57,7 @@ export function createLibraryInboxService({batches,workspace,stateDirectory=path
   start:input=>serial(input.id,async()=>{
    const library=await workspace.checked(input.id),saved=await record(input.id),groups=await sync(saved),chosen=select(saved,input.itemIds);
    if(chosen.some(item=>!item.available||item.ingestStatus==='uncertain'))batchFail('INVALID_SELECTION','来源不可用或关联不明确');
-   if(batches.getClassificationRules){const latest=await batches.getClassificationRules(library),stale=chosen.filter(item=>item.batchId&&item.status!=='archived'&&item.classification?.rulesHash&&item.classification.rulesHash!==latest.rulesHash);for(const batchId of new Set(stale.map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.refreshReview({batchId,revision:batch.revision});}if(stale.length)await sync(saved);}
+   if(batches.getClassificationRules){const latest=await batches.getClassificationRules(library),stale=chosen.filter(item=>item.batchId&&item.status!=='archived'&&((item.classification?.rulesHash&&item.classification.rulesHash!==latest.rulesHash)||(item.classification?.status!=='confirmed'&&item.classification?.effectiveRulesHash&&item.classification.effectiveRulesHash!==latest.effectiveRulesHash)));for(const batchId of new Set(stale.map(item=>item.batchId))){const batch=await snapshot(batchId);await batches.refreshReview({batchId,revision:batch.revision});}if(stale.length)await sync(saved);}
    const pending=chosen.filter(item=>!item.batchId);
    if(pending.length){
     if([...groups.values()].some(batch=>['running','pausing'].includes(batch.analysisJob.status)))batchFail('INBOX_BUSY','当前知识库仍在分析，请等待完成后开始新材料');

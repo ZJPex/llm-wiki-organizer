@@ -13,6 +13,7 @@ export function classificationRuleState(rule,catalog){
  if(rule.newCategoryHash&&category.organizerProposalHash!==rule.newCategoryHash)return 'category-mismatch';
  return 'active';
 }
+export const effectiveClassificationRulesHash=(snapshot,catalog)=>planDigest({libraryIdentity:snapshot.libraryIdentity,rules:snapshot.rules.filter(rule=>classificationRuleState(rule,catalog)==='active')});
 
 // 规则属于实际知识库身份；相同路径被新项目替换后不会继承旧偏好。
 export async function classificationLibraryIdentity(libraryPath){

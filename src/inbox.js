@@ -89,7 +89,8 @@ export function createInboxStrategy({checkpoint=async()=>{}}={}) {
       if(source.ingestStatus==='uncertain')return {status:'blocked',selected:false};
       await checkedFile(source.currentPath,source.hash);
       let entry=await planning.analyze({...inputFor(batch,source),onProgress,reanalyze});
-      if(entry.classification?.rulesHash&&planning.getClassificationRules&&(await planning.getClassificationRules(batch)).rulesHash!==entry.classification.rulesHash){await planning.invalidateReview({...inputFor(batch,source),clearClassification:true});entry={...entry,classification:null,frozenPlan:null};}
+      const latestRules=planning.getClassificationRules?await planning.getClassificationRules(batch):null;
+      if(latestRules&&((entry.classification?.rulesHash&&latestRules.rulesHash!==entry.classification.rulesHash)||(entry.classification?.status!=='confirmed'&&entry.classification?.effectiveRulesHash&&latestRules.effectiveRulesHash!==entry.classification.effectiveRulesHash))){await planning.invalidateReview({...inputFor(batch,source),clearClassification:true});entry={...entry,classification:null,frozenPlan:null};}
       const reliable=entry.analysis&&!entry.analysis.uncertain&&['body','navigation'].includes(entry.kind);
       if(reliable&&!entry.classification&&planning.classify&&!modelContext()?.shouldPause?.())entry=await planning.classify({...inputFor(batch,source),onProgress});
       return {...entry,status:reliable?(entry.classification?'classified':'analyzed'):'needs-information',selected:false,analysisCalls:entry.reused?0:entry.segments?.length??0};
