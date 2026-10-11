@@ -43,6 +43,14 @@ test('明确审核的已有目标经依赖证明保留无关新增后的选择�
  const archived=await f.batchCall('confirmNewArchive',{requestId:'proof-selected',writersPaused:true,items:[{sourceId:cache.sourceId,name:cache.confirmedName,category:cache.classification.category}]});assert.equal(archived.flow.newArchive.counts.succeeded,1);assert.match(await readFile(path.join(f.libraryPath,'raw/sources/001 缓存/cache.md'),'utf8'),/缓存一致性/);await lstat(path.join(f.sourceRoot,'network.md'));
 });
 
+test('无关目录证明不能覆盖新分类规则，保留正文并拒绝旧审核依据',async t=>{
+ const f=await fixture(t);await f.write('cache','缓存一致性提供失败恢复机制，正文包含明确可核验的设计与使用证据。');await f.write('network','网络连接需要协议与超时管理，正文包含明确可核验的设计与使用证据。');const {id}=await f.call('workspace/save',f.settings),scan=await f.call('inbox/scan',{id});await f.call('inbox/start',{id,itemIds:scan.items.map(item=>item.itemId)});
+ const ready=await wait(()=>f.call('inbox/list',{id}),value=>!value.analysisActive&&value.items.every(item=>item.status==='reviewable')),cache=ready.items.find(item=>item.identity==='cache.md'),network=ready.items.find(item=>item.identity==='network.md');
+ await f.call('inbox/review',{id,itemId:cache.itemId,reviewBasis:cache.reviewBasis,name:'cache.md',category:'001 缓存',saveClassificationRule:true,ruleText:'缓存材料优先按缓存用途归类'});const bodyCalls=f.calls.filter(call=>['segment','synthesis'].includes(call.stage)).length;
+ await mkdir(path.join(f.libraryPath,'raw/sources/003 图像'));const checked=await f.call('inbox/recheck',{id}),remaining=checked.items.find(item=>item.itemId===network.itemId),confirmed=checked.items.find(item=>item.itemId===cache.itemId);assert.equal(confirmed.status,'confirmed');assert.equal(remaining.classification,undefined);assert.deepEqual(remaining.analysis,network.analysis);assert.ok(checked.reviewCheck.classificationNeededItemIds.includes(network.itemId));assert.ok(!checked.reviewCheck.classificationNeededItemIds.includes(cache.itemId));
+ await assert.rejects(f.call('inbox/review',{id,itemId:network.itemId,reviewBasis:network.reviewBasis,name:'network.md',category:'002 网络'}),{code:'STALE_REVIEW'});await f.call('inbox/start',{id,itemIds:[network.itemId]});const resumed=await wait(()=>f.call('inbox/list',{id}),value=>!value.analysisActive);assert.equal(resumed.items.find(item=>item.itemId===network.itemId).status,'reviewable');assert.equal(f.calls.filter(call=>['segment','synthesis'].includes(call.stage)).length,bodyCalls);
+});
+
 test('安全暂停后部分归档再按原范围继续，成功检查点复用而失败和未选文件保持原处',async t=>{
  let open=false;const gates=[],release=()=>{open=true;gates.forEach(resolve=>resolve());};
  const f=await fixture(t,{model:async(r,answer)=>{if(r.identity==='long.md'&&!open&&!gates.length)await new Promise(resolve=>gates.push(resolve));if(r.identity==='failed.md')return {};return answer(r);}});
